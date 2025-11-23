@@ -6,9 +6,11 @@ import (
 	"log"
 	"testing"
 
+	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestDequeue(t *testing.T) {
@@ -58,17 +60,35 @@ func TestDequeue(t *testing.T) {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
+		var itemlist [][]byte
 		prefix := keyActiveQueue(queue)
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			k := item.Key()
 			err := item.Value(func(v []byte) error {
+				itemlist = append(itemlist, v)
 				fmt.Printf("key=%s, value=%s\n", k, v)
 				return nil
 			})
 			if err != nil {
 				return err
 			}
+		}
+
+		for _, item := range itemlist {
+			val, err := txn.Get(keyTask(string(item)))
+			require.NoError(t, err)
+
+			err = val.Value(func(val []byte) error {
+				item := &generated.Task{}
+				err = proto.Unmarshal(val, item)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("key=%s, value=%s\n", item.GetId(), item.String())
+				return nil
+			})
+			require.NoError(t, err)
 		}
 
 		return nil

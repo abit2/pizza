@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 /*
@@ -54,7 +56,16 @@ func (db *DB) Enqueue(queue, value []byte) error {
 	return db.db.Update(func(txn *badger.Txn) error {
 		taskID := uuid.New().String()
 
-		err := txn.Set(keyTask(taskID), value)
+		taskBytes, err := db.marshalTask(&generated.Task{
+			Id:      taskID,
+			Payload: value,
+			State:   generated.State_PENDING,
+		})
+		if err != nil {
+			return err
+		}
+
+		err = txn.Set(keyTask(taskID), taskBytes)
 		if err != nil {
 			return err
 		}
@@ -66,6 +77,18 @@ func (db *DB) Enqueue(queue, value []byte) error {
 
 		return nil
 	})
+}
+
+func (db *DB) marshalTask(task *generated.Task) ([]byte, error) {
+	return proto.Marshal(task)
+}
+
+func (db *DB) unmarshalTask(data []byte) (*generated.Task, error) {
+	task := &generated.Task{}
+	if err := proto.Unmarshal(data, task); err != nil {
+		return nil, err
+	}
+	return task, nil
 }
 
 /*
@@ -100,6 +123,8 @@ func (db *DB) Enqueue(queue, value []byte) error {
 
 var queueTemplate = "pizza:%s:%s"
 
+// var queueLeaseTemplate = "pizza:lease:%020d:%s"
+
 func keyPauseQueue(queue []byte) []byte {
 	key := fmt.Sprintf(queueTemplate, string(queue), "paused")
 	return []byte(key)
@@ -109,6 +134,11 @@ func keyPendingQueue(queue []byte) []byte {
 	key := fmt.Sprintf(queueTemplate, string(queue), "pending")
 	return []byte(key)
 }
+
+// func keyLeaseQueue(now int64, taskID string) []byte {
+// 	key := fmt.Sprintf(queueLeaseTemplate, now, taskID)
+// 	return []byte(key)
+// }
 
 func keyActiveQueue(queue []byte) []byte {
 	key := fmt.Sprintf(queueTemplate, string(queue), "active")
@@ -126,7 +156,7 @@ func keyTask(taskID string) []byte {
 }
 
 func (db *DB) Dequeue(queue []byte) ([]byte, error) {
-	var msg []byte
+	var resp []byte
 	err := db.db.Update(func(txn *badger.Txn) error {
 		_, err := txn.Get(keyPauseQueue(queue))
 		if err != nil && err != badger.ErrKeyNotFound {
@@ -140,9 +170,15 @@ func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 
 		db.logger.Info("Dequeued task", zap.String("taskID", taskID))
 
+		// push to active queue
 		if err := pushToList(txn, keyActiveQueue(queue), taskID); err != nil {
 			return err
 		}
+
+		// push to lease zset
+		// if err := pushToZSet(txn, keyActiveQueue(queue)); err != nil {
+		// 	return err
+		// }
 
 		taskKey := keyTask(taskID)
 		taskItem, err := txn.Get(taskKey)
@@ -150,16 +186,40 @@ func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 			return err
 		}
 
+		var msg []byte
 		msg, err = taskItem.ValueCopy(msg)
 		if err != nil {
 			return err
 		}
+
+		task, err := db.unmarshalTask(msg)
+		if err != nil {
+			return err
+		}
+
+		// Update the state of the task to active
+		task.State = generated.State_ACTIVE
+		updatedStateTaskBytes, err := db.marshalTask(task)
+		if err != nil {
+			return err
+		}
+
+		err = txn.Set(taskKey, updatedStateTaskBytes)
+		if err != nil {
+			return err
+		}
+
+		resp = task.GetPayload()
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return msg, nil
+	return resp, nil
+}
+
+func pushToZSet(txn *badger.Txn, queueWithState []byte) error {
+	return nil
 }
 
 func pushToList(txn *badger.Txn, queueWithState []byte, taskID string) error {

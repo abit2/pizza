@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package task;
+
+option go_package = "task/generated;generated";
+
+message Task {
+    string id = 1;
+    bytes payload = 2;
+    state state = 3;
+}
+
+enum state {
+    PENDING = 0;
+    ACTIVE = 1;
+    COMPLETED = 2;
+}
