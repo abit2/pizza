@@ -22,5 +22,5 @@ func main() {
 		log.Fatal(err)
 	}
 
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 }

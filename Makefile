@@ -8,3 +8,7 @@ proto:
 		-I=$(PROTO_DIR) \
 		--go_out=$(GO_OUT_DIR) \
 		$(PROTO_SRC)
+
+.PHONY: lint
+lint:
+	golangci-lint run --fix

@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/abit2/pizza/task/task/generated"
@@ -19,21 +21,34 @@ func TestDequeue(t *testing.T) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer bdb.Close()
+	defer func() {
+		err := bdb.Close()
+		require.NoError(t, err)
+		// Remove all items from the queue
+		err = os.RemoveAll(path)
+		require.NoError(t, err)
+	}()
 
 	l := zaptest.NewLogger(t)
-	dbWrap, err := New(bdb, l)
+	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
 
 	queue := []byte("hello")
-	err = dbWrap.Enqueue(queue, []byte("world"))
+	err = dbWrap.Enqueue(queue, []byte("world - 0"))
+	require.NoError(t, err)
+
+	err = dbWrap.Enqueue(queue, []byte("world - 1"))
 	require.NoError(t, err)
 
 	item, err := dbWrap.Dequeue(queue)
 	require.NoError(t, err)
-	require.Equal(t, []byte("world"), item)
+	require.Equal(t, []byte("world - 0"), item)
 
-	bdb.View(func(txn *badger.Txn) error {
+	item, err = dbWrap.Dequeue(queue)
+	require.NoError(t, err)
+	require.Equal(t, []byte("world - 1"), item)
+
+	e := bdb.View(func(txn *badger.Txn) error {
 		seqKey := keySeq(keyActiveQueue(queue))
 
 		item, err := txn.Get(seqKey)
@@ -60,14 +75,30 @@ func TestDequeue(t *testing.T) {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
-		var itemlist [][]byte
+		prefixTask := []byte("task:")
+		var taskKeys []string
+		for it.Seek(prefixTask); it.ValidForPrefix(prefixTask); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			keys := strings.Split(string(k), ":")
+			taskKeys = append(taskKeys, keys[len(keys)-1])
+			err := item.Value(func(v []byte) error {
+				item := &generated.Task{}
+				err = proto.Unmarshal(v, item)
+				if err != nil {
+					return err
+				}
+				require.Equal(t, item.GetState(), generated.State_ACTIVE)
+				return nil
+			})
+			require.NoError(t, err)
+		}
+
 		prefix := keyActiveQueue(queue)
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
-			k := item.Key()
 			err := item.Value(func(v []byte) error {
-				itemlist = append(itemlist, v)
-				fmt.Printf("key=%s, value=%s\n", k, v)
+				require.Contains(t, taskKeys, string(v), fmt.Sprintf("taskKeys=%v, key=%s", taskKeys, v))
 				return nil
 			})
 			if err != nil {
@@ -75,23 +106,16 @@ func TestDequeue(t *testing.T) {
 			}
 		}
 
-		for _, item := range itemlist {
-			val, err := txn.Get(keyTask(string(item)))
-			require.NoError(t, err)
-
-			err = val.Value(func(val []byte) error {
-				item := &generated.Task{}
-				err = proto.Unmarshal(val, item)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("key=%s, value=%s\n", item.GetId(), item.String())
-				return nil
-			})
-			require.NoError(t, err)
+		leasePrefix := []byte(fmt.Sprintf("pizza:lease:%s:", queue))
+		for it.Seek(leasePrefix); it.ValidForPrefix(leasePrefix); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			l := strings.Split(string(k), ":")
+			require.Contains(t, taskKeys, l[len(l)-1])
 		}
 
 		return nil
 	})
+	require.NoError(t, e)
 
 }

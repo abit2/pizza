@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
@@ -32,13 +33,27 @@ import (
  | Lua atomicity | DB WriteBatch                 |
 */
 
+const (
+	defaultLeaseDuration = 30 * time.Second
+)
+
+type Config struct {
+	LeaseDuration time.Duration
+}
+
 type DB struct {
 	db     *badger.DB
 	logger *zap.Logger
+	config *Config
 }
 
-func New(db *badger.DB, logger *zap.Logger) (*DB, error) {
-	return &DB{db: db, logger: logger}, nil
+func New(db *badger.DB, logger *zap.Logger, config *Config) (*DB, error) {
+	if config == nil {
+		config = &Config{
+			LeaseDuration: defaultLeaseDuration,
+		}
+	}
+	return &DB{db: db, logger: logger, config: config}, nil
 }
 
 var ErrQueueEmpty = errors.New("queue is empty")
@@ -121,40 +136,6 @@ func (db *DB) unmarshalTask(data []byte) (*generated.Task, error) {
  return nil`)
 */
 
-var queueTemplate = "pizza:%s:%s"
-
-// var queueLeaseTemplate = "pizza:lease:%020d:%s"
-
-func keyPauseQueue(queue []byte) []byte {
-	key := fmt.Sprintf(queueTemplate, string(queue), "paused")
-	return []byte(key)
-}
-
-func keyPendingQueue(queue []byte) []byte {
-	key := fmt.Sprintf(queueTemplate, string(queue), "pending")
-	return []byte(key)
-}
-
-// func keyLeaseQueue(now int64, taskID string) []byte {
-// 	key := fmt.Sprintf(queueLeaseTemplate, now, taskID)
-// 	return []byte(key)
-// }
-
-func keyActiveQueue(queue []byte) []byte {
-	key := fmt.Sprintf(queueTemplate, string(queue), "active")
-	return []byte(key)
-}
-
-func keySeq(queueWithState []byte) []byte {
-	key := fmt.Sprintf("seq:%s", string(queueWithState))
-	return []byte(key)
-}
-
-func keyTask(taskID string) []byte {
-	key := fmt.Sprintf("task:%s", taskID)
-	return []byte(key)
-}
-
 func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 	var resp []byte
 	err := db.db.Update(func(txn *badger.Txn) error {
@@ -176,9 +157,9 @@ func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 		}
 
 		// push to lease zset
-		// if err := pushToZSet(txn, keyActiveQueue(queue)); err != nil {
-		// 	return err
-		// }
+		if err := pushToZSet(txn, keyLeaseQueue(time.Now().Add(db.config.LeaseDuration).Unix(), queue, taskID)); err != nil {
+			return err
+		}
 
 		taskKey := keyTask(taskID)
 		taskItem, err := txn.Get(taskKey)
@@ -218,8 +199,8 @@ func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 	return resp, nil
 }
 
-func pushToZSet(txn *badger.Txn, queueWithState []byte) error {
-	return nil
+func pushToZSet(txn *badger.Txn, key []byte) error {
+	return txn.Set(key, []byte{})
 }
 
 func pushToList(txn *badger.Txn, queueWithState []byte, taskID string) error {
@@ -269,6 +250,9 @@ func popFromList(txn *badger.Txn, prefix []byte) (string, bool) {
 	key := item.KeyCopy(nil)
 
 	jobIDBytes, _ := item.ValueCopy(nil)
-	txn.Delete(key)
+	err := txn.Delete(key)
+	if err != nil {
+		return "", false
+	}
 	return string(jobIDBytes), true
 }
