@@ -203,19 +203,7 @@ func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
 			return err
 		}
 
-		taskKey := keyTask(taskID)
-		taskItem, err := txn.Get(taskKey)
-		if err != nil {
-			return err
-		}
-
-		var msg []byte
-		msg, err = taskItem.ValueCopy(msg)
-		if err != nil {
-			return err
-		}
-
-		task, err := db.unmarshalTask(msg)
+		task, err := db.getTask(txn, taskID)
 		if err != nil {
 			return err
 		}
@@ -227,7 +215,7 @@ func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
 			return err
 		}
 
-		err = txn.Set(taskKey, updatedStateTaskBytes)
+		err = txn.Set(keyTask(taskID), updatedStateTaskBytes)
 		if err != nil {
 			return err
 		}
@@ -377,46 +365,27 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 		// always delete before overwriting the reference
 		// change the state of the task to retry state
 		// delete from the active queue
-		refKey := keyReference(queue, taskID)
-		refItem, err := txn.Get(refKey)
-		if err != nil {
-			return err
-		}
-		var refBytes []byte
-		refBytes, err = refItem.ValueCopy(refBytes)
+		taskRef, err := db.getReference(txn, queue, taskID)
 		if err != nil {
 			return err
 		}
 
-		taskRef, err := db.unmarshalTaskReference(refBytes)
-		if err != nil {
-			return err
-		}
-
-		// delete from the active queue
+		// delete from the existing queue - active
 		err = txn.Delete([]byte(taskRef.Key))
 		if err != nil {
 			return err
 		}
 
-		taskItem, err := txn.Get(keyTask(taskID))
+		task, err := db.getTask(txn, taskID)
 		if err != nil {
 			return err
 		}
-
-		var taskBytes []byte
-		taskBytes, err = taskItem.ValueCopy(taskBytes)
-		if err != nil {
-			return err
-		}
-
-		task, err := db.unmarshalTask(taskBytes)
-		if err != nil {
-			return err
+		if task == nil {
+			return ErrNotFound
 		}
 
 		task.State = generated.State_RETRY
-		taskBytes, err = db.marshalTask(task)
+		taskBytes, err := db.marshalTask(task)
 		if err != nil {
 			return err
 		}
@@ -428,7 +397,7 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 
 		retryTime := db.config.RetryFn(time.Now())
 		keyToZSet := keyZSet(retryTime.Unix(), queue, []byte(generated.State_RETRY.String()), taskID)
-
+		// TODO: fix the reference tracking for zset
 		err = db.pushToZSet(txn, keyToZSet)
 		if err != nil {
 			return err
@@ -460,4 +429,23 @@ func (db *DB) getReference(txn *badger.Txn, queue []byte, taskID string) (*gener
 	}
 
 	return taskRef, nil
+}
+
+func (db *DB) getTask(txn *badger.Txn, taskID string) (*generated.Task, error) {
+	taskItem, err := txn.Get(keyTask(taskID))
+	if err != nil {
+		return nil, err
+	}
+
+	var taskBytes []byte
+	taskBytes, err = taskItem.ValueCopy(taskBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := db.unmarshalTask(taskBytes)
+	if err != nil {
+		return nil, err
+	}
+	return task, nil
 }
