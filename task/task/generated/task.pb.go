@@ -27,6 +27,8 @@ const (
 	State_PENDING   State = 0
 	State_ACTIVE    State = 1
 	State_COMPLETED State = 2
+	State_RETRY     State = 3
+	State_ARCHIVED  State = 4
 )
 
 // Enum value maps for State.
@@ -35,11 +37,15 @@ var (
 		0: "PENDING",
 		1: "ACTIVE",
 		2: "COMPLETED",
+		3: "RETRY",
+		4: "ARCHIVED",
 	}
 	State_value = map[string]int32{
 		"PENDING":   0,
 		"ACTIVE":    1,
 		"COMPLETED": 2,
+		"RETRY":     3,
+		"ARCHIVED":  4,
 	}
 )
 
@@ -130,6 +136,66 @@ func (x *Task) GetState() State {
 	return State_PENDING
 }
 
+type TaskReference struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	LeaseKey      string                 `protobuf:"bytes,3,opt,name=leaseKey,proto3" json:"leaseKey,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TaskReference) Reset() {
+	*x = TaskReference{}
+	mi := &file_task_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskReference) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskReference) ProtoMessage() {}
+
+func (x *TaskReference) ProtoReflect() protoreflect.Message {
+	mi := &file_task_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskReference.ProtoReflect.Descriptor instead.
+func (*TaskReference) Descriptor() ([]byte, []int) {
+	return file_task_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TaskReference) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *TaskReference) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *TaskReference) GetLeaseKey() string {
+	if x != nil {
+		return x.LeaseKey
+	}
+	return ""
+}
+
 var File_task_proto protoreflect.FileDescriptor
 
 const file_task_proto_rawDesc = "" +
@@ -139,12 +205,18 @@ const file_task_proto_rawDesc = "" +
 	"\x04Task\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12!\n" +
-	"\x05state\x18\x03 \x01(\x0e2\v.task.stateR\x05state*/\n" +
+	"\x05state\x18\x03 \x01(\x0e2\v.task.stateR\x05state\"M\n" +
+	"\rTaskReference\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x1a\n" +
+	"\bleaseKey\x18\x03 \x01(\tR\bleaseKey*H\n" +
 	"\x05state\x12\v\n" +
 	"\aPENDING\x10\x00\x12\n" +
 	"\n" +
 	"\x06ACTIVE\x10\x01\x12\r\n" +
-	"\tCOMPLETED\x10\x02B\x1aZ\x18task/generated;generatedb\x06proto3"
+	"\tCOMPLETED\x10\x02\x12\t\n" +
+	"\x05RETRY\x10\x03\x12\f\n" +
+	"\bARCHIVED\x10\x04B\x1aZ\x18task/generated;generatedb\x06proto3"
 
 var (
 	file_task_proto_rawDescOnce sync.Once
@@ -159,10 +231,11 @@ func file_task_proto_rawDescGZIP() []byte {
 }
 
 var file_task_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_task_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_task_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_task_proto_goTypes = []any{
-	(State)(0),   // 0: task.state
-	(*Task)(nil), // 1: task.Task
+	(State)(0),            // 0: task.state
+	(*Task)(nil),          // 1: task.Task
+	(*TaskReference)(nil), // 2: task.TaskReference
 }
 var file_task_proto_depIdxs = []int32{
 	0, // 0: task.Task.state:type_name -> task.state
@@ -184,7 +257,7 @@ func file_task_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_task_proto_rawDesc), len(file_task_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   1,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -4,12 +4,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -37,8 +39,14 @@ const (
 	defaultLeaseDuration = 30 * time.Second
 )
 
+var (
+	ErrQueuePaused = errors.New("queue is paused")
+	ErrNotFound    = errors.New("not found")
+)
+
 type Config struct {
 	LeaseDuration time.Duration
+	RetryFn       func(t time.Time) time.Time
 }
 
 type DB struct {
@@ -47,10 +55,15 @@ type DB struct {
 	config *Config
 }
 
+func defaultRetryFn(t time.Time) time.Time {
+	return t.Add(time.Minute)
+}
+
 func New(db *badger.DB, logger *zap.Logger, config *Config) (*DB, error) {
 	if config == nil {
 		config = &Config{
 			LeaseDuration: defaultLeaseDuration,
+			RetryFn:       defaultRetryFn,
 		}
 	}
 	return &DB{db: db, logger: logger, config: config}, nil
@@ -60,11 +73,12 @@ var ErrQueueEmpty = errors.New("queue is empty")
 var ErrInvalidQueue = errors.New("invalid queue")
 
 func isValidQueue(queue []byte) bool {
-	return strings.Contains(string(queue), "pending") ||
-		strings.Contains(string(queue), "active") ||
-		strings.Contains(string(queue), "retry") ||
-		strings.Contains(string(queue), "archived") ||
-		strings.Contains(string(queue), "completed")
+	q := strings.ToLower(string(queue))
+	return strings.Contains(q, "pending") ||
+		strings.Contains(q, "active") ||
+		strings.Contains(q, "retry") ||
+		strings.Contains(q, "archived") ||
+		strings.Contains(q, "completed")
 }
 
 func (db *DB) Enqueue(queue, value []byte) error {
@@ -85,7 +99,7 @@ func (db *DB) Enqueue(queue, value []byte) error {
 			return err
 		}
 
-		err = pushToList(txn, keyPendingQueue(queue), taskID)
+		err = db.pushToList(txn, queue, []byte(generated.State_PENDING.String()), taskID)
 		if err != nil {
 			return err
 		}
@@ -99,7 +113,21 @@ func (db *DB) marshalTask(task *generated.Task) ([]byte, error) {
 }
 
 func (db *DB) unmarshalTask(data []byte) (*generated.Task, error) {
+	if data == nil {
+		return nil, ErrNotFound
+	}
 	task := &generated.Task{}
+	if err := proto.Unmarshal(data, task); err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func (db *DB) unmarshalTaskReference(data []byte) (*generated.TaskReference, error) {
+	if data == nil {
+		return nil, ErrNotFound
+	}
+	task := &generated.TaskReference{}
 	if err := proto.Unmarshal(data, task); err != nil {
 		return nil, err
 	}
@@ -136,15 +164,29 @@ func (db *DB) unmarshalTask(data []byte) (*generated.Task, error) {
  return nil`)
 */
 
-func (db *DB) Dequeue(queue []byte) ([]byte, error) {
+func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
 	var resp []byte
 	err := db.db.Update(func(txn *badger.Txn) error {
-		_, err := txn.Get(keyPauseQueue(queue))
+		v, err := txn.Get(keyPauseQueue(queue))
 		if err != nil && err != badger.ErrKeyNotFound {
-			return err
+			return multierr.Append(ErrQueuePaused, err)
+		}
+		if v != nil {
+			var paused []byte
+			paused, err = v.ValueCopy(paused)
+			if err != nil {
+				return err
+			}
+			isPaused, err := strconv.ParseBool(string(paused))
+			if err != nil {
+				return err
+			}
+			if isPaused {
+				return ErrQueuePaused
+			}
 		}
 
-		taskID, ok := popFromList(txn, keyPendingQueue(queue))
+		taskID, ok := popFromList(txn, keyQueue(queue, []byte(generated.State_PENDING.String())))
 		if !ok {
 			return ErrQueueEmpty
 		}
@@ -152,12 +194,12 @@ func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 		db.logger.Info("Dequeued task", zap.String("taskID", taskID))
 
 		// push to active queue
-		if err := pushToList(txn, keyActiveQueue(queue), taskID); err != nil {
+		if err := db.pushToList(txn, queue, []byte(generated.State_ACTIVE.String()), taskID); err != nil {
 			return err
 		}
 
-		// push to lease zset
-		if err := pushToZSet(txn, keyLeaseQueue(time.Now().Add(db.config.LeaseDuration).Unix(), queue, taskID)); err != nil {
+		// lease task
+		if err := db.leaseTask(txn, queue, taskID); err != nil {
 			return err
 		}
 
@@ -199,11 +241,12 @@ func (db *DB) Dequeue(queue []byte) ([]byte, error) {
 	return resp, nil
 }
 
-func pushToZSet(txn *badger.Txn, key []byte) error {
+func (db *DB) pushToZSet(txn *badger.Txn, key []byte) error {
 	return txn.Set(key, []byte{})
 }
 
-func pushToList(txn *badger.Txn, queueWithState []byte, taskID string) error {
+func (db *DB) pushToList(txn *badger.Txn, queue, state []byte, taskID string) error {
+	queueWithState := keyQueue(queue, state)
 	// check if queue is valid
 	if !isValidQueue(queueWithState) {
 		return ErrInvalidQueue
@@ -230,8 +273,34 @@ func pushToList(txn *badger.Txn, queueWithState []byte, taskID string) error {
 	}
 
 	// --- write queue entry: queue:<name>:<seq> → jobID ---
-	key := fmt.Sprintf("%s:%020d", queueWithState, seq)
-	return txn.Set([]byte(key), []byte(taskID))
+	keyForQueue := fmt.Sprintf("%s:%020d", queueWithState, seq)
+	err = txn.Set([]byte(keyForQueue), []byte(taskID))
+	if err != nil {
+		return err
+	}
+
+	taskRef, err := db.getReference(txn, queue, taskID)
+	if err != nil && !(errors.Is(err, badger.ErrKeyNotFound) && string(state) == generated.State_PENDING.String()) {
+		return err
+	}
+	if taskRef != nil {
+		taskRef.Key = keyForQueue
+	} else {
+		taskRef = &generated.TaskReference{
+			Key: keyForQueue,
+			Id:  taskID,
+		}
+	}
+	val, err := proto.Marshal(taskRef)
+	if err != nil {
+		return err
+	}
+	err = txn.Set(keyReference(queue, taskID), val)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func popFromList(txn *badger.Txn, prefix []byte) (string, bool) {
@@ -255,4 +324,140 @@ func popFromList(txn *badger.Txn, prefix []byte) (string, bool) {
 		return "", false
 	}
 	return string(jobIDBytes), true
+}
+
+func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
+	timeTillLease := time.Now().Add(db.config.LeaseDuration).Unix()
+	keyToZSet := keyLeaseQueue(timeTillLease, queue, taskID)
+
+	taskRef, err := db.getReference(txn, queue, taskID)
+
+	taskRef.LeaseKey = string(keyToZSet)
+	taskRefBytes, err := proto.Marshal(taskRef)
+	if err != nil {
+		return err
+	}
+
+	// push to lease reference
+	keyReference := keyReference(queue, taskID)
+	err = txn.Set(keyReference, taskRefBytes)
+	if err != nil {
+		return err
+	}
+
+	// push to lease zset
+	if err := db.pushToZSet(txn, keyToZSet); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
+	err := db.db.Update(func(txn *badger.Txn) error {
+		v, err := txn.Get(keyPauseQueue(queue))
+		if err != nil && err != badger.ErrKeyNotFound {
+			return multierr.Append(ErrQueuePaused, err)
+		}
+
+		if v != nil {
+			var paused []byte
+			paused, err = v.ValueCopy(paused)
+			if err != nil {
+				return err
+			}
+			isPaused, err := strconv.ParseBool(string(paused))
+			if err != nil {
+				return err
+			}
+			if isPaused {
+				return ErrQueuePaused
+			}
+		}
+
+		// always delete before overwriting the reference
+		// change the state of the task to retry state
+		// delete from the active queue
+		refKey := keyReference(queue, taskID)
+		refItem, err := txn.Get(refKey)
+		if err != nil {
+			return err
+		}
+		var refBytes []byte
+		refBytes, err = refItem.ValueCopy(refBytes)
+		if err != nil {
+			return err
+		}
+
+		taskRef, err := db.unmarshalTaskReference(refBytes)
+		if err != nil {
+			return err
+		}
+
+		// delete from the active queue
+		err = txn.Delete([]byte(taskRef.Key))
+		if err != nil {
+			return err
+		}
+
+		taskItem, err := txn.Get(keyTask(taskID))
+		if err != nil {
+			return err
+		}
+
+		var taskBytes []byte
+		taskBytes, err = taskItem.ValueCopy(taskBytes)
+		if err != nil {
+			return err
+		}
+
+		task, err := db.unmarshalTask(taskBytes)
+		if err != nil {
+			return err
+		}
+
+		task.State = generated.State_RETRY
+		taskBytes, err = db.marshalTask(task)
+		if err != nil {
+			return err
+		}
+
+		err = txn.Set(keyTask(taskID), taskBytes)
+		if err == nil {
+			return err
+		}
+
+		retryTime := db.config.RetryFn(time.Now())
+		keyToZSet := keyZSet(retryTime.Unix(), queue, []byte(generated.State_RETRY.String()), taskID)
+
+		err = db.pushToZSet(txn, keyToZSet)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *DB) getReference(txn *badger.Txn, queue []byte, taskID string) (*generated.TaskReference, error) {
+	refKey := keyReference(queue, taskID)
+	refItem, err := txn.Get(refKey)
+	if err != nil {
+		return nil, err
+	}
+	var refBytes []byte
+	refBytes, err = refItem.ValueCopy(refBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	taskRef, err := db.unmarshalTaskReference(refBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return taskRef, nil
 }

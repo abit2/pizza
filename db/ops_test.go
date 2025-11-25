@@ -40,16 +40,16 @@ func TestDequeue(t *testing.T) {
 	err = dbWrap.Enqueue(queue, []byte("world - 1"))
 	require.NoError(t, err)
 
-	item, err := dbWrap.Dequeue(queue)
+	item, err := dbWrap.MoveToActiveFromPending(queue)
 	require.NoError(t, err)
 	require.Equal(t, []byte("world - 0"), item)
 
-	item, err = dbWrap.Dequeue(queue)
+	item, err = dbWrap.MoveToActiveFromPending(queue)
 	require.NoError(t, err)
 	require.Equal(t, []byte("world - 1"), item)
 
 	e := bdb.View(func(txn *badger.Txn) error {
-		seqKey := keySeq(keyActiveQueue(queue))
+		seqKey := keySeq(keyQueue(queue, []byte(generated.State_ACTIVE.String())))
 
 		item, err := txn.Get(seqKey)
 		require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestDequeue(t *testing.T) {
 			return nil
 		})
 
-		seqKey = keySeq(keyPendingQueue(queue))
+		seqKey = keySeq(keyQueue(queue, []byte(generated.State_PENDING.String())))
 		item, err = txn.Get(seqKey)
 		require.NoError(t, err)
 
@@ -88,13 +88,13 @@ func TestDequeue(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				require.Equal(t, item.GetState(), generated.State_ACTIVE)
+				require.Equal(t, item.GetState(), generated.State_ACTIVE, "Task state should be ACTIVE %s", item.GetState().String())
 				return nil
 			})
 			require.NoError(t, err)
 		}
 
-		prefix := keyActiveQueue(queue)
+		prefix := keyQueue(queue, []byte(generated.State_PENDING.String()))
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(v []byte) error {

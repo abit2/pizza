@@ -14,4 +14,12 @@ enum state {
     PENDING = 0;
     ACTIVE = 1;
     COMPLETED = 2;
+    RETRY = 3;
+    ARCHIVED = 4;
+}
+
+message TaskReference {
+    string id = 1;
+    string key = 2;
+    string leaseKey = 3;
 }
