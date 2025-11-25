@@ -18,26 +18,6 @@ This allows free use, modification, and redistribution under the AGPL terms.
 
 ---
 
-### 🔐 Enterprise License (Proprietary)
-The **Pizza Commercial Edition** provides additional features such as:
-
-- Multi-tenant orchestration  
-- PVC draining / archival engine  
-- Actor lifecycle inspector  
-- High-availability actor scheduler  
-- Priority & weighted queueing  
-- Observability dashboard  
-- Secure state replication  
-- Advanced autoscaling hooks  
-
-Enterprise Features are proprietary and require a commercial license.  
-See: `COMM-LICENSE.md`
-
-For business inquiries:  
-**ankit.baruah1@gmail.com**
-
----
-
 ### ❤️ Supporting the Project
 Pizza is developed and maintained by **Ankit Kumar Baruah**.
 Commercial licensing supports ongoing development of advanced features.
