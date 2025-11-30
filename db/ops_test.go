@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
@@ -15,7 +18,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestDequeue(t *testing.T) {
+func TestDequeueWithSyncTest(t *testing.T) {
+	synctest.Test(t, testDequeue)
+}
+
+func testDequeue(t *testing.T) {
 	path := "./data"
 	bdb, err := badger.Open(badger.DefaultOptions(path))
 	if err != nil {
@@ -33,89 +40,165 @@ func TestDequeue(t *testing.T) {
 	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
 
+	taskKeys := make(map[string]string)
+
+	payload := []string{"world - 0", "world - 1"}
 	queue := []byte("hello")
-	err = dbWrap.Enqueue(queue, []byte("world - 0"))
-	require.NoError(t, err)
 
-	err = dbWrap.Enqueue(queue, []byte("world - 1"))
-	require.NoError(t, err)
-
-	item, err := dbWrap.MoveToActiveFromPending(queue)
-	require.NoError(t, err)
-	require.Equal(t, []byte("world - 0"), item)
-
-	item, err = dbWrap.MoveToActiveFromPending(queue)
-	require.NoError(t, err)
-	require.Equal(t, []byte("world - 1"), item)
-
-	e := bdb.View(func(txn *badger.Txn) error {
-		seqKey := keySeq(keyQueue(queue, []byte(generated.State_ACTIVE.String())))
-
-		item, err := txn.Get(seqKey)
+	for _, p := range payload {
+		taskID, err := dbWrap.Enqueue(queue, []byte(p))
 		require.NoError(t, err)
+		taskKeys[string(taskID)] = p
+	}
 
-		_ = item.Value(func(val []byte) error {
-			n := int(binary.BigEndian.Uint64(val))
-			require.Greater(t, n, 0)
-			fmt.Printf("seqKey=%s, value=%d\n", seqKey, n)
-			return nil
-		})
+	// checking pending
+	seqCount := 0
+	for tID, load := range taskKeys {
+		e := bdb.View(func(txn *badger.Txn) error {
+			seqKey := keySeq(keyQueue(queue, []byte(generated.State_PENDING.String())))
 
-		seqKey = keySeq(keyQueue(queue, []byte(generated.State_PENDING.String())))
-		item, err = txn.Get(seqKey)
-		require.NoError(t, err)
-
-		_ = item.Value(func(val []byte) error {
-			n := int(binary.BigEndian.Uint64(val))
-			require.Greater(t, n, 0)
-			fmt.Printf("seqKey=%s, value=%d\n", seqKey, n)
-			return nil
-		})
-
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-
-		prefixTask := []byte("task:")
-		var taskKeys []string
-		for it.Seek(prefixTask); it.ValidForPrefix(prefixTask); it.Next() {
-			item := it.Item()
-			k := item.Key()
-			keys := strings.Split(string(k), ":")
-			taskKeys = append(taskKeys, keys[len(keys)-1])
-			err := item.Value(func(v []byte) error {
-				item := &generated.Task{}
-				err = proto.Unmarshal(v, item)
-				if err != nil {
-					return err
-				}
-				require.Equal(t, item.GetState(), generated.State_ACTIVE, "Task state should be ACTIVE %s", item.GetState().String())
-				return nil
-			})
+			item, err := txn.Get(seqKey)
 			require.NoError(t, err)
-		}
-
-		prefix := keyQueue(queue, []byte(generated.State_PENDING.String()))
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(v []byte) error {
-				require.Contains(t, taskKeys, string(v), fmt.Sprintf("taskKeys=%v, key=%s", taskKeys, v))
+			_ = item.Value(func(val []byte) error {
+				n := int(binary.BigEndian.Uint64(val))
+				require.Greater(t, n, 0)
+				seqCount += 1
+				fmt.Printf("seqKey=%s, value=%d\n", seqKey, n)
 				return nil
 			})
-			if err != nil {
-				return err
-			}
-		}
 
-		leasePrefix := []byte(fmt.Sprintf("pizza:lease:%s:", queue))
-		for it.Seek(leasePrefix); it.ValidForPrefix(leasePrefix); it.Next() {
-			item := it.Item()
-			k := item.Key()
-			l := strings.Split(string(k), ":")
-			require.Contains(t, taskKeys, l[len(l)-1])
-		}
+			taskItem := getTask(t, txn, queue, tID)
+			require.Equal(t, generated.State_PENDING, taskItem.GetState())
+			require.Equal(t, load, string(taskItem.Payload))
 
-		return nil
-	})
-	require.NoError(t, e)
+			taskRefItem := getRefItem(t, txn, queue, tID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			pendingQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, pendingQBytes)
+			return nil
+		})
+		require.NoError(t, e)
 
+	}
+	require.Equal(t, len(taskKeys), seqCount)
+
+	// now move the task to active
+	for _, _ = range taskKeys {
+		_, err = dbWrap.MoveToActiveFromPending(queue)
+		require.NoError(t, err)
+	}
+
+	// checking active tasks
+	activeSeqCount := 0
+	for tID, load := range taskKeys {
+		e := bdb.View(func(txn *badger.Txn) error {
+			seqKey := keySeq(keyQueue(queue, []byte(generated.State_ACTIVE.String())))
+
+			item, err := txn.Get(seqKey)
+			require.NoError(t, err)
+
+			_ = item.Value(func(val []byte) error {
+				n := int(binary.BigEndian.Uint64(val))
+				require.Greater(t, n, 0)
+				activeSeqCount += 1
+				fmt.Printf("seqKey=%s, value=%d\n", seqKey, n)
+				return nil
+			})
+			taskItem := getTask(t, txn, queue, tID)
+			require.Equal(t, generated.State_ACTIVE, taskItem.GetState())
+			require.Equal(t, load, string(taskItem.Payload))
+
+			taskRefItem := getRefItem(t, txn, queue, tID)
+			require.NotEmpty(t, taskRefItem.LeaseKey)
+			leaseBytes, err := txn.Get([]byte(taskRefItem.LeaseKey))
+			require.NoError(t, err)
+			require.NotNil(t, leaseBytes)
+			leaseTs := getTsFromKey(t, taskRefItem.LeaseKey)
+			fmt.Println("lease ts ", leaseTs, " time now ", time.Now())
+			require.Equal(t, defaultLeaseDuration, time.Until(leaseTs))
+
+			activeQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, activeQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+
+	}
+	require.Equal(t, len(taskKeys), activeSeqCount)
+
+	// now move to retry queue
+	for taskID := range taskKeys {
+		err := dbWrap.MoveToRetryFromActive(queue, taskID)
+		require.NoError(t, err)
+	}
+
+	// check retry task
+	for tID, load := range taskKeys {
+		e := bdb.View(func(txn *badger.Txn) error {
+			taskItem := getTask(t, txn, queue, tID)
+			require.Equal(t, generated.State_RETRY, taskItem.GetState())
+			require.Equal(t, load, string(taskItem.Payload))
+
+			taskRefItem := getRefItem(t, txn, queue, tID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			retryTs := getTsFromKey(t, taskRefItem.Key)
+			fmt.Println("retry ts ", retryTs, " time now ", time.Now())
+			require.Equal(t, time.Until(defaultRetryFn(time.Now())), time.Until(retryTs))
+
+			retryQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, retryQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+
+	}
+	require.Equal(t, len(taskKeys), activeSeqCount)
+}
+
+func getRefItem(t *testing.T, txn *badger.Txn, queue []byte, taskID string) *generated.TaskReference {
+	t.Helper()
+	refKey := keyReference(queue, taskID)
+	refBytes, err := txn.Get(refKey)
+	require.NoError(t, err)
+
+	resp, err := refBytes.ValueCopy(nil)
+	require.NoError(t, err)
+
+	refItem := &generated.TaskReference{}
+	err = proto.Unmarshal(resp, refItem)
+	require.NoError(t, err)
+
+	require.Equal(t, taskID, refItem.Id)
+	return refItem
+}
+
+func getTask(t *testing.T, txn *badger.Txn, queue []byte, taskID string) *generated.Task {
+	t.Helper()
+	taskKey := keyTask(taskID)
+	taskBytes, err := txn.Get(taskKey)
+	require.NoError(t, err)
+
+	resp, err := taskBytes.ValueCopy(nil)
+	require.NoError(t, err)
+
+	taskItem := &generated.Task{}
+	err = proto.Unmarshal(resp, taskItem)
+	require.NoError(t, err)
+
+	require.Equal(t, taskID, taskItem.Id)
+	return taskItem
+}
+
+func getTsFromKey(t *testing.T, key string) time.Time {
+
+	// var queueZSetTemplate = "pizza:%s:%s:%020d:%s"
+	info := strings.Split(key, ":")
+	unixTsStr := info[len(info)-2]
+	ts, err := strconv.ParseInt(unixTsStr, 10, 64)
+	require.NoError(t, err)
+
+	return time.Unix(ts, 0)
 }

@@ -42,6 +42,7 @@ const (
 var (
 	ErrQueuePaused = errors.New("queue is paused")
 	ErrNotFound    = errors.New("not found")
+	ErrTaskRef     = errors.New("task ref cannot be nil")
 )
 
 type Config struct {
@@ -81,10 +82,9 @@ func isValidQueue(queue []byte) bool {
 		strings.Contains(q, "completed")
 }
 
-func (db *DB) Enqueue(queue, value []byte) error {
-	return db.db.Update(func(txn *badger.Txn) error {
-		taskID := uuid.New().String()
-
+func (db *DB) Enqueue(queue, value []byte) ([]byte, error) {
+	taskID := uuid.New().String()
+	err := db.db.Update(func(txn *badger.Txn) error {
 		taskBytes, err := db.marshalTask(&generated.Task{
 			Id:      taskID,
 			Payload: value,
@@ -106,6 +106,10 @@ func (db *DB) Enqueue(queue, value []byte) error {
 
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return []byte(taskID), nil
 }
 
 func (db *DB) marshalTask(task *generated.Task) ([]byte, error) {
@@ -314,13 +318,27 @@ func popFromList(txn *badger.Txn, prefix []byte) (string, bool) {
 	return string(jobIDBytes), true
 }
 
-func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
-	timeTillLease := time.Now().Add(db.config.LeaseDuration).Unix()
-	keyToZSet := keyLeaseQueue(timeTillLease, queue, taskID)
-
+func (db *DB) pushToZSetQueue(txn *badger.Txn, timeTill int64, queue []byte, taskID string, state []byte, isLeaseQueue bool) error {
 	taskRef, err := db.getReference(txn, queue, taskID)
+	if err != nil {
+		return err
+	}
 
-	taskRef.LeaseKey = string(keyToZSet)
+	// it should not be possible that the taskRef is nil
+	if taskRef == nil {
+		return ErrTaskRef
+	}
+
+	var keyToZSet []byte
+	if isLeaseQueue {
+		keyToZSet = keyLeaseQueue(timeTill, queue, taskID)
+		taskRef.LeaseKey = string(keyToZSet)
+	} else {
+		keyToZSet = keyZSet(timeTill, queue, state, taskID)
+		taskRef.Key = string(keyToZSet)
+		taskRef.LeaseKey = ""
+	}
+
 	taskRefBytes, err := proto.Marshal(taskRef)
 	if err != nil {
 		return err
@@ -337,6 +355,16 @@ func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
 	if err := db.pushToZSet(txn, keyToZSet); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
+	timeTillLease := time.Now().Add(db.config.LeaseDuration).Unix()
+	err := db.pushToZSetQueue(txn, timeTillLease, queue, taskID, []byte(leaseState), true)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -376,6 +404,12 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 			return err
 		}
 
+		// delete the lease
+		err = txn.Delete([]byte(taskRef.LeaseKey))
+		if err != nil {
+			return err
+		}
+
 		task, err := db.getTask(txn, taskID)
 		if err != nil {
 			return err
@@ -391,14 +425,13 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 		}
 
 		err = txn.Set(keyTask(taskID), taskBytes)
-		if err == nil {
+		if err != nil {
 			return err
 		}
 
 		retryTime := db.config.RetryFn(time.Now())
-		keyToZSet := keyZSet(retryTime.Unix(), queue, []byte(generated.State_RETRY.String()), taskID)
 		// TODO: fix the reference tracking for zset
-		err = db.pushToZSet(txn, keyToZSet)
+		err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskID, []byte(generated.State_RETRY.String()), false)
 		if err != nil {
 			return err
 		}

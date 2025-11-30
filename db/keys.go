@@ -4,10 +4,13 @@ import "fmt"
 
 var queueTemplate = "pizza:%s:%s"
 var queueZSetTemplate = "pizza:%s:%s:%020d:%s"
-var queueLeaseTemplate = "pizza:%s:lease:%020d:%s"
+
+// var queueLeaseTemplate = "pizza:%s:lease:%020d:%s"
 var keyLeaseReferenceTemplate = "pizza:reference:%s:%s"
 var keySeqTemplate = "seq:%s"
 var keyTaskTemplate = "task:%s"
+
+const leaseState = "lease"
 
 func keyReference(queue []byte, taskID string) []byte {
 	key := fmt.Sprintf(keyLeaseReferenceTemplate, string(queue), taskID)
@@ -30,14 +33,9 @@ func keyPauseQueue(queue []byte) []byte {
 }
 
 func keyLeaseQueue(now int64, queue []byte, taskID string) []byte {
-	key := fmt.Sprintf(queueLeaseTemplate, string(queue), now, taskID)
+	key := fmt.Sprintf(queueZSetTemplate, string(queue), "lease", now, taskID)
 	return []byte(key)
 }
-
-// func keyActiveQueue(queue []byte) []byte {
-// 	key := fmt.Sprintf(queueTemplate, string(queue), "active")
-// 	return []byte(key)
-// }
 
 func keySeq(queueWithState []byte) []byte {
 	key := fmt.Sprintf(keySeqTemplate, string(queueWithState))
