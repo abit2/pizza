@@ -287,7 +287,125 @@ func getTsFromKey(t *testing.T, key string) time.Time {
 }
 
 // TODO: Implement TestMoveToArchivedFromActive
-func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {}
+func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := zaptest.NewLogger(t)
+	dbWrap, err := New(bdb, l, nil)
+	require.NoError(t, err)
+
+	taskKeys := make(map[string]string)
+
+	payload := []string{"world - 0", "world - 1"}
+	queue := []byte("hello")
+	headers := []byte("headers")
+	maxRetryCount := uint32(3)
+
+	for _, p := range payload {
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		require.NoError(t, err)
+		taskKeys[string(taskID)] = p
+	}
+
+	for taskID, payload := range taskKeys {
+		_, err := dbWrap.Dequeue(queue)
+		require.NoError(t, err)
+
+		err = dbWrap.MoveToArchivedFromActive(queue, taskID)
+		require.NoError(t, err)
+
+		e := bdb.View(func(txn *badger.Txn) error {
+			archivedQ := keyQueue(queue, []byte(generated.State_ARCHIVED.String()))
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			defer it.Close()
+			for it.Seek(archivedQ); it.ValidForPrefix(archivedQ); it.Next() {
+				item := it.Item()
+				k := item.Key()
+				err := item.Value(func(v []byte) error {
+					fmt.Printf("archived key=%s, value=%s\n", k, v)
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			taskItem := getTask(t, txn, taskID, headers, maxRetryCount)
+			require.Equal(t, generated.State_ARCHIVED, taskItem.GetState())
+			require.Equal(t, payload, string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
+
+			taskRefItem := getRefItem(t, txn, queue, taskID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			fmt.Println("archived ref", taskRefItem.Key)
+
+			pendingQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, pendingQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+	}
+}
 
 // TODO: Implement TestMoveToCompletedFromActive
-func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {}
+func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := zaptest.NewLogger(t)
+	dbWrap, err := New(bdb, l, nil)
+	require.NoError(t, err)
+
+	taskKeys := make(map[string]string)
+
+	payload := []string{"world - 0", "world - 1"}
+	queue := []byte("hello")
+	headers := []byte("headers")
+	maxRetryCount := uint32(3)
+
+	for _, p := range payload {
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		require.NoError(t, err)
+		taskKeys[string(taskID)] = p
+	}
+
+	for taskID, payload := range taskKeys {
+		_, err := dbWrap.Dequeue(queue)
+		require.NoError(t, err)
+
+		err = dbWrap.MoveToCompletedFromActive(queue, taskID)
+		require.NoError(t, err)
+
+		e := bdb.View(func(txn *badger.Txn) error {
+			archivedQ := keyQueue(queue, []byte(generated.State_COMPLETED.String()))
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			defer it.Close()
+			for it.Seek(archivedQ); it.ValidForPrefix(archivedQ); it.Next() {
+				item := it.Item()
+				k := item.Key()
+				err := item.Value(func(v []byte) error {
+					fmt.Printf("completed key=%s, value=%s\n", k, v)
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			taskItem := getTask(t, txn, taskID, headers, maxRetryCount)
+			require.Equal(t, generated.State_COMPLETED, taskItem.GetState())
+			require.Equal(t, payload, string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
+
+			taskRefItem := getRefItem(t, txn, queue, taskID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			fmt.Println("archived ref", taskRefItem.Key)
+
+			pendingQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, pendingQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+	}
+}

@@ -267,6 +267,7 @@ func (db *DB) pushToList(txn *badger.Txn, queue, state []byte, taskID string) er
 	}
 	if taskRef != nil {
 		taskRef.Key = keyForQueue
+		taskRef.LeaseKey = ""
 	} else {
 		taskRef = &generated.TaskReference{
 			Key: keyForQueue,
@@ -393,6 +394,7 @@ func (db *DB) MoveToArchivedFromActive(queue []byte, taskID string) error {
 		}
 
 		stateToMove := generated.State_ARCHIVED
+
 		task.State = stateToMove
 		taskBytes, err := db.marshalTask(task)
 		if err != nil {
