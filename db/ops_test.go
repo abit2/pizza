@@ -56,9 +56,11 @@ func (suite *OpstTestSuite) TestDequeue() {
 
 	payload := []string{"world - 0", "world - 1"}
 	queue := []byte("hello")
+	headers := []byte("headers")
+	maxRetryCount := uint32(2)
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p))
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 	}
@@ -79,9 +81,10 @@ func (suite *OpstTestSuite) TestDequeue() {
 				return nil
 			})
 
-			taskItem := getTask(t, txn, queue, tID)
+			taskItem := getTask(t, txn, tID, headers, maxRetryCount)
 			require.Equal(t, generated.State_PENDING, taskItem.GetState())
 			require.Equal(t, load, string(taskItem.Payload))
+			require.Equal(t, uint32(0), taskItem.RetryCount)
 
 			taskRefItem := getRefItem(t, txn, queue, tID)
 			require.Empty(t, taskRefItem.LeaseKey)
@@ -97,7 +100,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 
 	// now move the task to active
 	for _, _ = range taskKeys {
-		_, err = dbWrap.MoveToActiveFromPending(queue)
+		_, err = dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 	}
 
@@ -117,9 +120,10 @@ func (suite *OpstTestSuite) TestDequeue() {
 				fmt.Printf("seqKey=%s, value=%d\n", seqKey, n)
 				return nil
 			})
-			taskItem := getTask(t, txn, queue, tID)
+			taskItem := getTask(t, txn, tID, headers, maxRetryCount)
 			require.Equal(t, generated.State_ACTIVE, taskItem.GetState())
 			require.Equal(t, load, string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
 
 			taskRefItem := getRefItem(t, txn, queue, tID)
 			require.NotEmpty(t, taskRefItem.LeaseKey)
@@ -137,7 +141,6 @@ func (suite *OpstTestSuite) TestDequeue() {
 			return nil
 		})
 		require.NoError(t, e)
-
 	}
 	require.Equal(t, len(taskKeys), activeSeqCount)
 
@@ -150,9 +153,10 @@ func (suite *OpstTestSuite) TestDequeue() {
 	// check retry task
 	for tID, load := range taskKeys {
 		e := bdb.View(func(txn *badger.Txn) error {
-			taskItem := getTask(t, txn, queue, tID)
+			taskItem := getTask(t, txn, tID, headers, maxRetryCount)
 			require.Equal(t, generated.State_RETRY, taskItem.GetState())
 			require.Equal(t, load, string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
 
 			taskRefItem := getRefItem(t, txn, queue, tID)
 			require.Empty(t, taskRefItem.LeaseKey)
@@ -182,15 +186,17 @@ func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 
 	payload := []string{"world - 0", "world - 1"}
 	queue := []byte("hello")
+	headers := []byte("headers")
+	maxRetryCount := uint32(3)
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p))
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 	}
 
 	for taskID, payload := range taskKeys {
-		_, err := dbWrap.MoveToActiveFromPending(queue)
+		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
 		err = dbWrap.MoveToRetryFromActive(queue, taskID)
@@ -215,9 +221,10 @@ func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 				}
 			}
 
-			taskItem := getTask(t, txn, queue, taskID)
+			taskItem := getTask(t, txn, taskID, headers, maxRetryCount)
 			require.Equal(t, generated.State_PENDING, taskItem.GetState())
 			require.Equal(t, payload, string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
 
 			taskRefItem := getRefItem(t, txn, queue, taskID)
 			require.Empty(t, taskRefItem.LeaseKey)
@@ -249,7 +256,7 @@ func getRefItem(t *testing.T, txn *badger.Txn, queue []byte, taskID string) *gen
 	return refItem
 }
 
-func getTask(t *testing.T, txn *badger.Txn, queue []byte, taskID string) *generated.Task {
+func getTask(t *testing.T, txn *badger.Txn, taskID string, headers []byte, maxRetryCount uint32) *generated.Task {
 	t.Helper()
 	taskKey := keyTask(taskID)
 	taskBytes, err := txn.Get(taskKey)
@@ -263,6 +270,8 @@ func getTask(t *testing.T, txn *badger.Txn, queue []byte, taskID string) *genera
 	require.NoError(t, err)
 
 	require.Equal(t, taskID, taskItem.Id)
+	require.Equal(t, taskItem.MaxRetries, maxRetryCount)
+	require.Equal(t, taskItem.Headers, headers)
 	return taskItem
 }
 

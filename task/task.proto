@@ -8,6 +8,9 @@ message Task {
     string id = 1;
     bytes payload = 2;
     state state = 3;
+    bytes headers = 4;
+    uint32 retryCount = 5;
+    uint32 maxRetries = 6;
 }
 
 enum state {

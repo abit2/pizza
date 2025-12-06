@@ -81,6 +81,9 @@ type Task struct {
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
 	State         State                  `protobuf:"varint,3,opt,name=state,proto3,enum=task.State" json:"state,omitempty"`
+	Headers       []byte                 `protobuf:"bytes,4,opt,name=headers,proto3" json:"headers,omitempty"`
+	RetryCount    uint32                 `protobuf:"varint,5,opt,name=retryCount,proto3" json:"retryCount,omitempty"`
+	MaxRetries    uint32                 `protobuf:"varint,6,opt,name=maxRetries,proto3" json:"maxRetries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -134,6 +137,27 @@ func (x *Task) GetState() State {
 		return x.State
 	}
 	return State_PENDING
+}
+
+func (x *Task) GetHeaders() []byte {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *Task) GetRetryCount() uint32 {
+	if x != nil {
+		return x.RetryCount
+	}
+	return 0
+}
+
+func (x *Task) GetMaxRetries() uint32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
 }
 
 type TaskReference struct {
@@ -201,11 +225,18 @@ var File_task_proto protoreflect.FileDescriptor
 const file_task_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"task.proto\x12\x04task\"S\n" +
+	"task.proto\x12\x04task\"\xad\x01\n" +
 	"\x04Task\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12!\n" +
-	"\x05state\x18\x03 \x01(\x0e2\v.task.stateR\x05state\"M\n" +
+	"\x05state\x18\x03 \x01(\x0e2\v.task.stateR\x05state\x12\x18\n" +
+	"\aheaders\x18\x04 \x01(\fR\aheaders\x12\x1e\n" +
+	"\n" +
+	"retryCount\x18\x05 \x01(\rR\n" +
+	"retryCount\x12\x1e\n" +
+	"\n" +
+	"maxRetries\x18\x06 \x01(\rR\n" +
+	"maxRetries\"M\n" +
 	"\rTaskReference\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x1a\n" +

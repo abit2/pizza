@@ -82,13 +82,16 @@ func isValidQueue(queue []byte) bool {
 		strings.Contains(q, "completed")
 }
 
-func (db *DB) Enqueue(queue, value []byte) ([]byte, error) {
+func (db *DB) Enqueue(queue, payload, headers []byte, maxRetry uint32) ([]byte, error) {
 	taskID := uuid.New().String()
 	err := db.db.Update(func(txn *badger.Txn) error {
 		taskBytes, err := db.marshalTask(&generated.Task{
-			Id:      taskID,
-			Payload: value,
-			State:   generated.State_PENDING,
+			Id:         taskID,
+			Payload:    payload,
+			State:      generated.State_PENDING,
+			Headers:    headers,
+			RetryCount: 0,
+			MaxRetries: maxRetry,
 		})
 		if err != nil {
 			return err
@@ -168,8 +171,9 @@ func (db *DB) unmarshalTaskReference(data []byte) (*generated.TaskReference, err
  return nil`)
 */
 
-func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
-	var resp []byte
+// Dequeue = MoveToActiveFromPending moves a task from pending queue to active queue.
+func (db *DB) Dequeue(queue []byte) (*generated.Task, error) {
+	var resp *generated.Task
 	err := db.db.Update(func(txn *badger.Txn) error {
 		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
 			return pausedErr
@@ -199,6 +203,7 @@ func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
 
 		// Update the state of the task to active
 		task.State = generated.State_ACTIVE
+		task.RetryCount += 1
 		updatedStateTaskBytes, err := db.marshalTask(task)
 		if err != nil {
 			return err
@@ -209,7 +214,7 @@ func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
 			return err
 		}
 
-		resp = task.GetPayload()
+		resp = task
 		return nil
 	})
 	if err != nil {
