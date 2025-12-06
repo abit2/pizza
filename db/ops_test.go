@@ -276,3 +276,9 @@ func getTsFromKey(t *testing.T, key string) time.Time {
 
 	return time.Unix(ts, 0)
 }
+
+// TODO: Implement TestMoveToArchivedFromActive
+func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {}
+
+// TODO: Implement TestMoveToCompletedFromActive
+func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {}

@@ -353,6 +353,152 @@ func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
 	return nil
 }
 
+func (db *DB) MoveToArchivedFromActive(queue []byte, taskID string) error {
+	return db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return pausedErr
+		}
+
+		// always delete before overwriting the reference
+		// change the state of the task to retry state
+		// delete from the active queue
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return err
+		}
+
+		// delete from the existing queue - active
+		err = txn.Delete([]byte(taskRef.Key))
+		if err != nil {
+			return err
+		}
+
+		// delete the lease
+		err = txn.Delete([]byte(taskRef.LeaseKey))
+		if err != nil {
+			return err
+		}
+
+		task, err := db.getTask(txn, taskID)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			return ErrNotFound
+		}
+
+		stateToMove := generated.State_ARCHIVED
+		task.State = stateToMove
+		taskBytes, err := db.marshalTask(task)
+		if err != nil {
+			return err
+		}
+
+		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
+			return setErr
+		}
+
+		if pushErr := db.pushToList(txn, queue, []byte(stateToMove.String()), taskID); pushErr != nil {
+			return pushErr
+		}
+		return nil
+	})
+}
+
+func (db *DB) MoveToCompletedFromActive(queue []byte, taskID string) error {
+	return db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return pausedErr
+		}
+
+		// always delete before overwriting the reference
+		// change the state of the task to retry state
+		// delete from the active queue
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return err
+		}
+
+		// delete from the existing queue - active
+		err = txn.Delete([]byte(taskRef.Key))
+		if err != nil {
+			return err
+		}
+
+		// delete the lease
+		err = txn.Delete([]byte(taskRef.LeaseKey))
+		if err != nil {
+			return err
+		}
+
+		task, err := db.getTask(txn, taskID)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			return ErrNotFound
+		}
+
+		stateToMove := generated.State_COMPLETED
+		task.State = stateToMove
+		taskBytes, err := db.marshalTask(task)
+		if err != nil {
+			return err
+		}
+
+		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
+			return setErr
+		}
+
+		if pushErr := db.pushToList(txn, queue, []byte(stateToMove.String()), taskID); pushErr != nil {
+			return pushErr
+		}
+		return nil
+	})
+}
+
+func (db *DB) MoveToFromRetry(queue []byte, taskID string) error {
+	return db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return pausedErr
+		}
+
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return err
+		}
+
+		deleteErr := txn.Delete([]byte(taskRef.Key))
+		if deleteErr != nil {
+			return deleteErr
+		}
+
+		task, err := db.getTask(txn, taskID)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			return ErrNotFound
+		}
+
+		stateToMove := generated.State_ARCHIVED
+		task.State = stateToMove
+		taskBytes, err := db.marshalTask(task)
+		if err != nil {
+			return err
+		}
+
+		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
+			return setErr
+		}
+
+		if pushErr := db.pushToList(txn, queue, []byte(stateToMove.String()), taskID); pushErr != nil {
+			return pushErr
+		}
+		return nil
+	})
+}
+
 func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 	err := db.db.Update(func(txn *badger.Txn) error {
 		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
