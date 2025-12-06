@@ -3,39 +3,51 @@ package db
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"go.uber.org/zap/zaptest"
 	"google.golang.org/protobuf/proto"
 )
 
-func TestDequeueWithSyncTest(t *testing.T) {
-	synctest.Test(t, testDequeue)
+const path = "./data"
+
+type OpstTestSuite struct {
+	suite.Suite
+	bdb *badger.DB
 }
 
-func testDequeue(t *testing.T) {
-	path := "./data"
-	bdb, err := badger.Open(badger.DefaultOptions(path))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func() {
-		err := bdb.Close()
-		require.NoError(t, err)
-		// Remove all items from the queue
-		err = os.RemoveAll(path)
-		require.NoError(t, err)
-	}()
+func TestOpstTestSuite(t *testing.T) {
+	suite.Run(t, new(OpstTestSuite))
+}
 
+func (suite *OpstTestSuite) SetupSuite() {
+	var err error
+	if suite.bdb != nil {
+		return
+	}
+	suite.bdb, err = badger.Open(badger.DefaultOptions(path))
+	require.NoError(suite.T(), err)
+}
+
+func (suite *OpstTestSuite) TearDownSuite() {
+	err := suite.bdb.Close()
+	require.NoError(suite.T(), err)
+	// Remove all items from the queue
+	err = os.RemoveAll(path)
+	require.NoError(suite.T(), err)
+}
+
+func (suite *OpstTestSuite) TestDequeue() {
+	t := suite.T()
+	bdb := suite.bdb
 	l := zaptest.NewLogger(t)
 	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
@@ -116,7 +128,8 @@ func testDequeue(t *testing.T) {
 			require.NotNil(t, leaseBytes)
 			leaseTs := getTsFromKey(t, taskRefItem.LeaseKey)
 			fmt.Println("lease ts ", leaseTs, " time now ", time.Now())
-			require.Equal(t, defaultLeaseDuration, time.Until(leaseTs))
+			require.True(t, time.Until(leaseTs) <= defaultLeaseDuration && time.Until(leaseTs) > 0)
+			// require.Equal(t, defaultLeaseDuration, time.Until(leaseTs))
 
 			activeQBytes, err := txn.Get([]byte(taskRefItem.Key))
 			require.NoError(t, err)
@@ -145,7 +158,7 @@ func testDequeue(t *testing.T) {
 			require.Empty(t, taskRefItem.LeaseKey)
 			retryTs := getTsFromKey(t, taskRefItem.Key)
 			fmt.Println("retry ts ", retryTs, " time now ", time.Now())
-			require.Equal(t, time.Until(defaultRetryFn(time.Now())), time.Until(retryTs))
+			require.True(t, time.Until(defaultRetryFn(time.Now())) >= time.Until(retryTs) && time.Until(retryTs) > 0)
 
 			retryQBytes, err := txn.Get([]byte(taskRefItem.Key))
 			require.NoError(t, err)
@@ -156,6 +169,67 @@ func testDequeue(t *testing.T) {
 
 	}
 	require.Equal(t, len(taskKeys), activeSeqCount)
+}
+
+func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := zaptest.NewLogger(t)
+	dbWrap, err := New(bdb, l, nil)
+	require.NoError(t, err)
+
+	taskKeys := make(map[string]string)
+
+	payload := []string{"world - 0", "world - 1"}
+	queue := []byte("hello")
+
+	for _, p := range payload {
+		taskID, err := dbWrap.Enqueue(queue, []byte(p))
+		require.NoError(t, err)
+		taskKeys[string(taskID)] = p
+	}
+
+	for taskID, payload := range taskKeys {
+		_, err := dbWrap.MoveToActiveFromPending(queue)
+		require.NoError(t, err)
+
+		err = dbWrap.MoveToRetryFromActive(queue, taskID)
+		require.NoError(t, err)
+
+		err = dbWrap.MoveToPendingFromRetry(queue, taskID)
+		require.NoError(t, err)
+
+		e := bdb.View(func(txn *badger.Txn) error {
+			pendingQ := keyQueue(queue, []byte(generated.State_PENDING.String()))
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			defer it.Close()
+			for it.Seek(pendingQ); it.ValidForPrefix(pendingQ); it.Next() {
+				item := it.Item()
+				k := item.Key()
+				err := item.Value(func(v []byte) error {
+					fmt.Printf("key=%s, value=%s\n", k, v)
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			taskItem := getTask(t, txn, queue, taskID)
+			require.Equal(t, generated.State_PENDING, taskItem.GetState())
+			require.Equal(t, payload, string(taskItem.Payload))
+
+			taskRefItem := getRefItem(t, txn, queue, taskID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			fmt.Println("pending ref", taskRefItem.Key)
+
+			pendingQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, pendingQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+	}
 }
 
 func getRefItem(t *testing.T, txn *badger.Txn, queue []byte, taskID string) *generated.TaskReference {

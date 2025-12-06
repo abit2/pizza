@@ -171,23 +171,8 @@ func (db *DB) unmarshalTaskReference(data []byte) (*generated.TaskReference, err
 func (db *DB) MoveToActiveFromPending(queue []byte) ([]byte, error) {
 	var resp []byte
 	err := db.db.Update(func(txn *badger.Txn) error {
-		v, err := txn.Get(keyPauseQueue(queue))
-		if err != nil && err != badger.ErrKeyNotFound {
-			return multierr.Append(ErrQueuePaused, err)
-		}
-		if v != nil {
-			var paused []byte
-			paused, err = v.ValueCopy(paused)
-			if err != nil {
-				return err
-			}
-			isPaused, err := strconv.ParseBool(string(paused))
-			if err != nil {
-				return err
-			}
-			if isPaused {
-				return ErrQueuePaused
-			}
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return pausedErr
 		}
 
 		taskID, ok := popFromList(txn, keyQueue(queue, []byte(generated.State_PENDING.String())))
@@ -370,24 +355,8 @@ func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
 
 func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 	err := db.db.Update(func(txn *badger.Txn) error {
-		v, err := txn.Get(keyPauseQueue(queue))
-		if err != nil && err != badger.ErrKeyNotFound {
-			return multierr.Append(ErrQueuePaused, err)
-		}
-
-		if v != nil {
-			var paused []byte
-			paused, err = v.ValueCopy(paused)
-			if err != nil {
-				return err
-			}
-			isPaused, err := strconv.ParseBool(string(paused))
-			if err != nil {
-				return err
-			}
-			if isPaused {
-				return ErrQueuePaused
-			}
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return pausedErr
 		}
 
 		// always delete before overwriting the reference
@@ -481,4 +450,68 @@ func (db *DB) getTask(txn *badger.Txn, taskID string) (*generated.Task, error) {
 		return nil, err
 	}
 	return task, nil
+}
+
+func (db *DB) checkPausedQueue(txn *badger.Txn, queue []byte) error {
+	v, err := txn.Get(keyPauseQueue(queue))
+	if err != nil && err != badger.ErrKeyNotFound {
+		return multierr.Append(ErrQueuePaused, err)
+	}
+
+	if v != nil {
+		var paused []byte
+		paused, err = v.ValueCopy(paused)
+		if err != nil {
+			return err
+		}
+		isPaused, err := strconv.ParseBool(string(paused))
+		if err != nil {
+			return err
+		}
+		if isPaused {
+			return ErrQueuePaused
+		}
+	}
+	return nil
+}
+
+func (db *DB) MoveToPendingFromRetry(queue []byte, taskID string) error {
+	return db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return pausedErr
+		}
+
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return err
+		}
+
+		deleteErr := txn.Delete([]byte(taskRef.Key))
+		if deleteErr != nil {
+			return deleteErr
+		}
+
+		task, err := db.getTask(txn, taskID)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			return ErrNotFound
+		}
+
+		task.State = generated.State_PENDING
+		taskBytes, err := db.marshalTask(task)
+		if err != nil {
+			return err
+		}
+
+		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
+			return setErr
+		}
+
+		if pushErr := db.pushToList(txn, queue, []byte(generated.State_PENDING.String()), taskID); pushErr != nil {
+			return pushErr
+		}
+		return nil
+	})
 }
