@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
 	"go.uber.org/multierr"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -52,7 +52,7 @@ type Config struct {
 
 type DB struct {
 	db     *badger.DB
-	logger *zap.Logger
+	logger *log.Logger
 	config *Config
 }
 
@@ -60,7 +60,7 @@ func defaultRetryFn(t time.Time) time.Time {
 	return t.Add(time.Minute)
 }
 
-func New(db *badger.DB, logger *zap.Logger, config *Config) (*DB, error) {
+func New(db *badger.DB, logger *log.Logger, config *Config) (*DB, error) {
 	if config == nil {
 		config = &Config{
 			LeaseDuration: defaultLeaseDuration,
@@ -184,7 +184,7 @@ func (db *DB) Dequeue(queue []byte) (*generated.Task, error) {
 			return ErrQueueEmpty
 		}
 
-		db.logger.Info("Dequeued task", zap.String("taskID", taskID))
+		db.logger.Info("Dequeued task", "taskID", taskID)
 
 		// push to active queue
 		if err := db.pushToList(txn, queue, []byte(generated.State_ACTIVE.String()), taskID); err != nil {

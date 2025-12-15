@@ -3,17 +3,18 @@ package db
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"go.uber.org/zap/zaptest"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -48,7 +49,7 @@ func (suite *OpstTestSuite) TearDownSuite() {
 func (suite *OpstTestSuite) TestDequeue() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
 
@@ -178,7 +179,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
 
@@ -290,7 +291,7 @@ func getTsFromKey(t *testing.T, key string) time.Time {
 func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
 
@@ -352,7 +353,7 @@ func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	dbWrap, err := New(bdb, l, nil)
 	require.NoError(t, err)
 
