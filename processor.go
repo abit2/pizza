@@ -3,21 +3,30 @@ package pizza
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
+	"github.com/pkg/errors"
 
 	"github.com/abit2/pizza/db"
 )
+
+// TODO: add a debounce process to prioritise the queues that have msgs over that doesn't
 
 type Handler interface {
 	Process(ctx context.Context, req *generated.Task) error
 }
 
+type DB interface {
+	Dequeue(queue []byte) (*generated.Task, error)
+	MoveToRetryFromActive(queue []byte, taskID string) error
+	MoveToArchivedFromActive(queue []byte, taskID string) error
+	MoveToCompletedFromActive(queue []byte, taskID string) error
+}
+
 type Processor struct {
 	logger *log.Logger
-	db     *db.DB
+	db     DB
 
 	sema chan struct{}
 	cfg  *ProcessorConfig
@@ -30,7 +39,7 @@ type ProcessorConfig struct {
 	Queues         []string
 }
 
-func NewProcessor(l *log.Logger, db *db.DB, cfg *ProcessorConfig) *Processor {
+func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig) *Processor {
 	return &Processor{
 		logger: l,
 		db:     db,
@@ -53,13 +62,18 @@ func (p *Processor) start(ctx context.Context) {
 					p.logger.Info("ctx done")
 					return
 				case p.sema <- struct{}{}:
-					err := p.exec(ctx, queue)
-					if err != nil {
-						// TODO: add a debounce process to prioritise the queues that have msgs over that doesn't
-						if !errors.Is(err, db.ErrQueueEmpty) {
-							p.logger.Error("exec err", err.Error())
+					task, dequeueErr := p.db.Dequeue([]byte(queue))
+					if dequeueErr != nil && !errors.Is(dequeueErr, db.ErrQueueEmpty) {
+						p.logger.Error("dequeue err", "err", dequeueErr.Error())
+					}
+
+					if dequeueErr == nil {
+						err := p.handleExecResult(ctx, p.exec(ctx, task), task, queue)
+						if err != nil {
+							p.logger.Error("exec err", "err", err)
 						}
 					}
+
 					<-p.sema
 				default:
 				}
@@ -69,18 +83,13 @@ func (p *Processor) start(ctx context.Context) {
 
 }
 
-func (p *Processor) exec(ctx context.Context, queue string) error {
-	task, err := p.db.Dequeue([]byte(queue))
-	if err != nil {
-		return err
-	}
-
+func (p *Processor) exec(ctx context.Context, task *generated.Task) error {
 	if task == nil {
 		return nil
 	}
 
 	headers := make(map[string]string)
-	err = json.Unmarshal(task.GetHeaders(), &headers)
+	err := json.Unmarshal(task.GetHeaders(), &headers)
 	if err != nil {
 		return err
 	}
@@ -98,4 +107,31 @@ func (p *Processor) exec(ctx context.Context, queue string) error {
 
 func (p *Processor) setupHandlers(handlersMapping map[string]Handler) {
 	p.handler = handlersMapping
+}
+
+func (p *Processor) handleExecResult(ctx context.Context, err error, task *generated.Task, queue string) error {
+	if err == nil {
+		return errors.Wrap(p.db.MoveToCompletedFromActive([]byte(queue), task.GetId()), "failed to move task to completed")
+	}
+
+	if errors.Is(err, context.Canceled) {
+		p.logger.Info("ctx canceled")
+		return err
+	}
+
+	if errors.Is(err, db.ErrQueueEmpty) {
+		p.logger.Info("queue empty")
+		return nil
+	}
+
+	// move to archived if retry limit is reached
+	// move to completed if err is nil
+	// move to retry if retry limit is not reached
+	retryCount := task.GetRetryCount()
+	maxRetryCount := task.GetMaxRetries()
+
+	if retryCount >= maxRetryCount {
+		return errors.Wrap(p.db.MoveToArchivedFromActive([]byte(queue), task.GetId()), "failed to move task to archived")
+	}
+	return errors.Wrap(p.db.MoveToRetryFromActive([]byte(queue), task.GetId()), "failed to move task to retry")
 }

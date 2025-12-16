@@ -2,7 +2,6 @@ package db
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	"go.uber.org/multierr"
 	"google.golang.org/protobuf/proto"
 )
@@ -464,52 +464,10 @@ func (db *DB) MoveToCompletedFromActive(queue []byte, taskID string) error {
 	})
 }
 
-func (db *DB) MoveToFromRetry(queue []byte, taskID string) error {
-	return db.db.Update(func(txn *badger.Txn) error {
-		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
-			return pausedErr
-		}
-
-		taskRef, err := db.getReference(txn, queue, taskID)
-		if err != nil {
-			return err
-		}
-
-		deleteErr := txn.Delete([]byte(taskRef.Key))
-		if deleteErr != nil {
-			return deleteErr
-		}
-
-		task, err := db.getTask(txn, taskID)
-		if err != nil {
-			return err
-		}
-		if task == nil {
-			return ErrNotFound
-		}
-
-		stateToMove := generated.State_ARCHIVED
-		task.State = stateToMove
-		taskBytes, err := db.marshalTask(task)
-		if err != nil {
-			return err
-		}
-
-		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
-			return setErr
-		}
-
-		if pushErr := db.pushToList(txn, queue, []byte(stateToMove.String()), taskID); pushErr != nil {
-			return pushErr
-		}
-		return nil
-	})
-}
-
 func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 	err := db.db.Update(func(txn *badger.Txn) error {
 		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
-			return pausedErr
+			return errors.Wrap(pausedErr, "failed to check paused queue")
 		}
 
 		// always delete before overwriting the reference
@@ -517,51 +475,52 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 		// delete from the active queue
 		taskRef, err := db.getReference(txn, queue, taskID)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to get reference")
 		}
 
+		db.logger.Debug("task ref", "reference", taskRef)
 		// delete from the existing queue - active
 		err = txn.Delete([]byte(taskRef.Key))
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete from active queue")
 		}
 
 		// delete the lease
 		err = txn.Delete([]byte(taskRef.LeaseKey))
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete lease")
 		}
 
 		task, err := db.getTask(txn, taskID)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to get task")
 		}
 		if task == nil {
-			return ErrNotFound
+			return errors.Wrap(ErrNotFound, "task not found")
 		}
 
 		task.State = generated.State_RETRY
 		taskBytes, err := db.marshalTask(task)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to marshal task")
 		}
 
 		err = txn.Set(keyTask(taskID), taskBytes)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to set task")
 		}
 
 		retryTime := db.config.RetryFn(time.Now())
 		// TODO: fix the reference tracking for zset
 		err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskID, []byte(generated.State_RETRY.String()), false)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to push to zset")
 		}
 
 		return nil
 	})
 	if err != nil {
-		return err
+		return errors.Wrap(err, "MoveToRetryFromActive")
 	}
 	return nil
 }

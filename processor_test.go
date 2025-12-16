@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,7 +60,11 @@ func (suite *ProcessorTestSuite) TearDownSuite() {
 
 func (suite *ProcessorTestSuite) Test_Start() {
 	t := suite.T()
-	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	lvl := new(slog.LevelVar)
+	lvl.Set(slog.LevelDebug)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: lvl,
+	})))
 	bdb := suite.bdb
 
 	queues := []string{"q_1", "q_2", "q_3"}
@@ -73,16 +78,18 @@ func (suite *ProcessorTestSuite) Test_Start() {
 	require.NoError(t, err)
 	p := NewProcessor(l, db, &ProcessorConfig{
 		MaxConcurrency: 5,
-		Queues:         []string{"q_1", "q_2", "q_3"},
+		Queues:         queues,
 	})
 
 	insertSomeData(t, db, queues, taskTypeMapping)
 
 	d := dummy{l: l}
+	d.count.Store(0)
+
 	p.setupHandlers(map[string]Handler{
-		"task_1": d,
-		"task_2": d,
-		"task_3": d,
+		"task_1": &d,
+		"task_2": &d,
+		"task_3": &d,
 	})
 
 	ctx := context.Background()
@@ -94,13 +101,17 @@ func (suite *ProcessorTestSuite) Test_Start() {
 	time.Sleep(300 * time.Millisecond)
 	l.Info("cancelling")
 	cancel()
+	require.Equal(t, len(queues), int(d.count.Load()))
 }
 
 type dummy struct {
-	l *log.Logger
+	l     *log.Logger
+	count atomic.Int32
 }
 
-func (d dummy) Process(ctx context.Context, req *generated.Task) error {
-	d.l.Info("hello", "payload", string(req.Payload))
+func (d *dummy) Process(ctx context.Context, req *generated.Task) error {
+	d.count.Add(1)
+
+	d.l.Info("hello", "payload", string(req.Payload), "count", d.count.Load())
 	return nil
 }

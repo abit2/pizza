@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/dgraph-io/badger/v4 v4.8.0
+	github.com/pkg/errors v0.9.1
 	go.uber.org/multierr v1.10.0
 )
 
