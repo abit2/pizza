@@ -12,6 +12,7 @@ import (
 )
 
 // TODO: add a debounce process to prioritise the queues that have msgs over that doesn't
+// TODO: add heartbeat/lease mechanism to recover orphaned tasks
 
 type Handler interface {
 	Process(ctx context.Context, req *generated.Task) error
@@ -109,7 +110,7 @@ func (p *Processor) setupHandlers(handlersMapping map[string]Handler) {
 	p.handler = handlersMapping
 }
 
-func (p *Processor) handleExecResult(ctx context.Context, err error, task *generated.Task, queue string) error {
+func (p *Processor) handleExecResult(_ context.Context, err error, task *generated.Task, queue string) error {
 	if err == nil {
 		return errors.Wrap(p.db.MoveToCompletedFromActive([]byte(queue), task.GetId()), "failed to move task to completed")
 	}
