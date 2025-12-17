@@ -81,7 +81,6 @@ func (p *Processor) start(ctx context.Context) {
 			}
 		}
 	}
-
 }
 
 func (p *Processor) exec(ctx context.Context, task *generated.Task) error {

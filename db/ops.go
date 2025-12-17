@@ -659,7 +659,7 @@ func (db *DB) Forward(queue []byte, now int64) error {
 				return err
 			}
 
-			db.logger.Debug("items pushed to pending", "key", string(key))
+			db.logger.Debug("items pushed to pending", "key", string(key))G
 		}
 		return nil
 	}); err != nil {
