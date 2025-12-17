@@ -51,24 +51,29 @@ type Config struct {
 	RetryFn       func(t time.Time) time.Time
 }
 
+type Clock interface {
+	Now() time.Time
+}
+
 type DB struct {
 	db     *badger.DB
 	logger *log.Logger
 	config *Config
+	clock  Clock
 }
 
 func defaultRetryFn(t time.Time) time.Time {
 	return t.Add(time.Minute)
 }
 
-func New(db *badger.DB, logger *log.Logger, config *Config) (*DB, error) {
+func New(db *badger.DB, logger *log.Logger, config *Config, cl Clock) (*DB, error) {
 	if config == nil {
 		config = &Config{
 			LeaseDuration: defaultLeaseDuration,
 			RetryFn:       defaultRetryFn,
 		}
 	}
-	return &DB{db: db, logger: logger, config: config}, nil
+	return &DB{db: db, logger: logger, config: config, clock: cl}, nil
 }
 
 var ErrQueueEmpty = errors.New("queue is empty")
@@ -351,7 +356,7 @@ func (db *DB) pushToZSetQueue(txn *badger.Txn, timeTill int64, queue []byte, tas
 }
 
 func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
-	timeTillLease := time.Now().Add(db.config.LeaseDuration).Unix()
+	timeTillLease := db.clock.Now().Add(db.config.LeaseDuration).Unix()
 	err := db.pushToZSetQueue(txn, timeTillLease, queue, taskID, []byte(leaseState), true)
 	if err != nil {
 		return err
@@ -511,7 +516,7 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 			return errors.Wrap(err, "failed to set task")
 		}
 
-		retryTime := db.config.RetryFn(time.Now())
+		retryTime := db.config.RetryFn(db.clock.Now())
 		err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskID, []byte(generated.State_RETRY.String()), false)
 		if err != nil {
 			return errors.Wrap(err, "failed to push to zset")
@@ -659,7 +664,7 @@ func (db *DB) Forward(queue []byte, now int64) error {
 				return err
 			}
 
-			db.logger.Debug("items pushed to pending", "key", string(key))G
+			db.logger.Debug("items pushed to pending", "key", string(key))
 		}
 		return nil
 	}); err != nil {
