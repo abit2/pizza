@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -511,7 +512,6 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 		}
 
 		retryTime := db.config.RetryFn(time.Now())
-		// TODO: fix the reference tracking for zset
 		err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskID, []byte(generated.State_RETRY.String()), false)
 		if err != nil {
 			return errors.Wrap(err, "failed to push to zset")
@@ -588,42 +588,90 @@ func (db *DB) checkPausedQueue(txn *badger.Txn, queue []byte) error {
 }
 
 func (db *DB) MoveToPendingFromRetry(queue []byte, taskID string) error {
-	return db.db.Update(func(txn *badger.Txn) error {
-		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
-			return pausedErr
-		}
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		return db.processRetryQueue(txn, queue, taskID)
+	}); err != nil {
+		return errors.Wrap(err, "MoveToPendingFromRetry")
+	}
+	return nil
+}
 
-		taskRef, err := db.getReference(txn, queue, taskID)
-		if err != nil {
-			return err
-		}
+func (db *DB) processRetryQueue(txn *badger.Txn, queue []byte, taskID string) error {
+	if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+		return pausedErr
+	}
 
-		deleteErr := txn.Delete([]byte(taskRef.Key))
-		if deleteErr != nil {
-			return deleteErr
-		}
+	taskRef, err := db.getReference(txn, queue, taskID)
+	if err != nil {
+		return err
+	}
 
-		task, err := db.getTask(txn, taskID)
-		if err != nil {
-			return err
-		}
-		if task == nil {
-			return ErrNotFound
-		}
+	deleteErr := txn.Delete([]byte(taskRef.Key))
+	if deleteErr != nil {
+		return deleteErr
+	}
 
-		task.State = generated.State_PENDING
-		taskBytes, err := db.marshalTask(task)
-		if err != nil {
-			return err
-		}
+	task, err := db.getTask(txn, taskID)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return ErrNotFound
+	}
 
-		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
-			return setErr
-		}
+	task.State = generated.State_PENDING
+	taskBytes, err := db.marshalTask(task)
+	if err != nil {
+		return err
+	}
 
-		if pushErr := db.pushToList(txn, queue, []byte(generated.State_PENDING.String()), taskID); pushErr != nil {
-			return pushErr
+	if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
+		return setErr
+	}
+
+	if pushErr := db.pushToList(txn, queue, []byte(generated.State_PENDING.String()), taskID); pushErr != nil {
+		return pushErr
+	}
+	return nil
+}
+
+// Foward moves tasks from retry state to pending state
+func (db *DB) Forward(queue []byte, now int64) error {
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		// iterate and foward all which are behind the timestamp in zset
+		prefix := fmt.Sprintf("pizza:%s:%s:", queue, generated.State_RETRY.String())
+		upperBound := fmt.Sprintf("%s%020d", prefix, now)
+
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(prefix)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+			if bytes.Compare(key, []byte(upperBound)) > 0 {
+				break
+			}
+
+			taskID := db.taskIDFromKeyOfZset(key)
+			if err := db.processRetryQueue(txn, queue, string(taskID)); err != nil {
+				return err
+			}
+
+			db.logger.Debug("items pushed to pending", "key", string(key))
 		}
 		return nil
-	})
+	}); err != nil {
+		return errors.Wrap(err, "Forward")
+	}
+	return nil
+}
+
+func (db *DB) taskIDFromKeyOfZset(key []byte) []byte {
+	idx := bytes.LastIndexByte(key, ':')
+	if idx == -1 || idx+1 >= len(key) {
+		return nil
+	}
+	return key[idx+1:]
 }

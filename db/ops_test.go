@@ -410,3 +410,70 @@ func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 		require.NoError(t, e)
 	}
 }
+
+func (suite *OpstTestSuite) TestForward() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+	dbWrap, err := New(bdb, l, nil)
+	require.NoError(t, err)
+
+	taskKeys := make(map[string]string)
+
+	payload := []string{"world - 0", "world - 1"}
+	queue := []byte("hello")
+	headers := []byte("headers")
+	maxRetryCount := uint32(3)
+
+	for _, p := range payload {
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		require.NoError(t, err)
+		taskKeys[string(taskID)] = p
+	}
+
+	for taskID, _ := range taskKeys {
+		_, err := dbWrap.Dequeue(queue)
+		require.NoError(t, err)
+
+		err = dbWrap.MoveToRetryFromActive(queue, taskID)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, dbWrap.Forward(queue, time.Now().Add(2 *time.Hour).Unix()))
+
+	for taskID, payload := range taskKeys {
+		e := bdb.View(func(txn *badger.Txn) error {
+			pendingQ := keyQueue(queue, []byte(generated.State_PENDING.String()))
+			it := txn.NewIterator(badger.DefaultIteratorOptions)
+			defer it.Close()
+			for it.Seek(pendingQ); it.ValidForPrefix(pendingQ); it.Next() {
+				item := it.Item()
+				k := item.Key()
+				err := item.Value(func(v []byte) error {
+					fmt.Printf("key=%s, value=%s\n", k, v)
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			}
+
+			taskItem := getTask(t, txn, taskID, headers, maxRetryCount)
+			require.Equal(t, generated.State_PENDING, taskItem.GetState())
+			require.Equal(t, payload, string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
+
+			taskRefItem := getRefItem(t, txn, queue, taskID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			fmt.Println("pending ref", taskRefItem.Key)
+
+			pendingQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, pendingQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+	}
+}
