@@ -12,6 +12,7 @@ import (
 	"github.com/abit2/pizza/db"
 	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
+	"github.com/abit2/pizza/utils"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -74,7 +75,7 @@ func (suite *ProcessorTestSuite) Test_Start() {
 		"q_3": "task_3",
 	}
 
-	db, err := db.New(bdb, l, nil)
+	db, err := db.New(bdb, l, nil, utils.NewRealClock())
 	require.NoError(t, err)
 	p := NewProcessor(l, db, &ProcessorConfig{
 		MaxConcurrency: 5,
