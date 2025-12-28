@@ -1,1 +1,0 @@
-ok  	github.com/abit2/pizza	0.436s [no tests to run]

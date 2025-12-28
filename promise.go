@@ -8,6 +8,7 @@ import (
 	"go.uber.org/multierr"
 )
 
+// TODO: write tests for promise/forwarder
 type Forwarder interface {
 	Forward(queue []byte, now int64) error
 }
