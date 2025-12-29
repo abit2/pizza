@@ -3,17 +3,19 @@ package db
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
+	"github.com/abit2/pizza/utils"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"go.uber.org/zap/zaptest"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -48,8 +50,8 @@ func (suite *OpstTestSuite) TearDownSuite() {
 func (suite *OpstTestSuite) TestDequeue() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
-	dbWrap, err := New(bdb, l, nil)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	dbWrap, err := New(bdb, l, nil, utils.NewRealClock())
 	require.NoError(t, err)
 
 	taskKeys := make(map[string]string)
@@ -178,8 +180,8 @@ func (suite *OpstTestSuite) TestDequeue() {
 func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
-	dbWrap, err := New(bdb, l, nil)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	dbWrap, err := New(bdb, l, nil, utils.NewRealClock())
 	require.NoError(t, err)
 
 	taskKeys := make(map[string]string)
@@ -290,8 +292,8 @@ func getTsFromKey(t *testing.T, key string) time.Time {
 func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
-	dbWrap, err := New(bdb, l, nil)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	dbWrap, err := New(bdb, l, nil, utils.NewRealClock())
 	require.NoError(t, err)
 
 	taskKeys := make(map[string]string)
@@ -352,8 +354,8 @@ func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 	t := suite.T()
 	bdb := suite.bdb
-	l := zaptest.NewLogger(t)
-	dbWrap, err := New(bdb, l, nil)
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	dbWrap, err := New(bdb, l, nil, utils.NewRealClock())
 	require.NoError(t, err)
 
 	taskKeys := make(map[string]string)
@@ -404,6 +406,95 @@ func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 			pendingQBytes, err := txn.Get([]byte(taskRefItem.Key))
 			require.NoError(t, err)
 			require.NotNil(t, pendingQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+	}
+}
+
+func (suite *OpstTestSuite) TestForward() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+
+	now := time.Now()
+	l.Info("time", "now", now.UTC(), "unix", now.Unix())
+	dbWrap, err := New(bdb, l, &Config{
+		LeaseDuration: defaultLeaseDuration,
+		RetryFn: func(now time.Time) time.Time {
+			return now.Add(1 * time.Minute)
+		},
+	}, utils.NewFakeClock(now, l, 1*time.Minute))
+	require.NoError(t, err)
+
+	taskKeys := make(map[string]string)
+
+	payload := []string{"world - 0", "world - 1"}
+	queue := []byte("hello")
+	headers := []byte("headers")
+	maxRetryCount := uint32(3)
+
+	for _, p := range payload {
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		require.NoError(t, err)
+		taskKeys[string(taskID)] = p
+	}
+
+	var taskIDMovedWithForwarder []string
+	var taskIDNotMovedWithForwarder []string
+	idx := 0
+	for taskID, _ := range taskKeys {
+		// 1 minutes
+		_, err := dbWrap.Dequeue(queue)
+		require.NoError(t, err)
+
+		// 1 minutes + 1 minute
+		err = dbWrap.MoveToRetryFromActive(queue, taskID)
+		require.NoError(t, err)
+		if idx == 0 {
+			taskIDMovedWithForwarder = append(taskIDMovedWithForwarder, taskID)
+			idx += 1
+		} else {
+			taskIDNotMovedWithForwarder = append(taskIDNotMovedWithForwarder, taskID)
+		}
+	}
+
+	require.NoError(t, dbWrap.Forward(queue, now.Add(3*time.Minute).Unix()))
+	for _, taskID := range taskIDMovedWithForwarder {
+		e := bdb.View(func(txn *badger.Txn) error {
+			taskItem := getTask(t, txn, taskID, headers, maxRetryCount)
+			require.Equal(t, generated.State_PENDING, taskItem.GetState())
+			require.Equal(t, taskKeys[taskID], string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
+
+			taskRefItem := getRefItem(t, txn, queue, taskID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			fmt.Println("pending ref", taskRefItem.Key)
+
+			retryQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, retryQBytes)
+			return nil
+		})
+		require.NoError(t, e)
+	}
+
+	for _, taskID := range taskIDNotMovedWithForwarder {
+		e := bdb.View(func(txn *badger.Txn) error {
+			taskItem := getTask(t, txn, taskID, headers, maxRetryCount)
+			require.Equal(t, generated.State_RETRY, taskItem.GetState())
+			require.Equal(t, taskKeys[taskID], string(taskItem.Payload))
+			require.Equal(t, uint32(1), taskItem.RetryCount)
+
+			taskRefItem := getRefItem(t, txn, queue, taskID)
+			require.Empty(t, taskRefItem.LeaseKey)
+			fmt.Println("pending ref", taskRefItem.Key)
+
+			retryQBytes, err := txn.Get([]byte(taskRefItem.Key))
+			require.NoError(t, err)
+			require.NotNil(t, retryQBytes)
 			return nil
 		})
 		require.NoError(t, e)

@@ -1,18 +1,19 @@
 package db
 
 import (
+	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 	"go.uber.org/multierr"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -50,24 +51,29 @@ type Config struct {
 	RetryFn       func(t time.Time) time.Time
 }
 
+type Clock interface {
+	Now() time.Time
+}
+
 type DB struct {
 	db     *badger.DB
-	logger *zap.Logger
+	logger *log.Logger
 	config *Config
+	clock  Clock
 }
 
 func defaultRetryFn(t time.Time) time.Time {
 	return t.Add(time.Minute)
 }
 
-func New(db *badger.DB, logger *zap.Logger, config *Config) (*DB, error) {
+func New(db *badger.DB, logger *log.Logger, config *Config, cl Clock) (*DB, error) {
 	if config == nil {
 		config = &Config{
 			LeaseDuration: defaultLeaseDuration,
 			RetryFn:       defaultRetryFn,
 		}
 	}
-	return &DB{db: db, logger: logger, config: config}, nil
+	return &DB{db: db, logger: logger, config: config, clock: cl}, nil
 }
 
 var ErrQueueEmpty = errors.New("queue is empty")
@@ -184,7 +190,7 @@ func (db *DB) Dequeue(queue []byte) (*generated.Task, error) {
 			return ErrQueueEmpty
 		}
 
-		db.logger.Info("Dequeued task", zap.String("taskID", taskID))
+		db.logger.Info("Dequeued task", "taskID", taskID)
 
 		// push to active queue
 		if err := db.pushToList(txn, queue, []byte(generated.State_ACTIVE.String()), taskID); err != nil {
@@ -350,7 +356,7 @@ func (db *DB) pushToZSetQueue(txn *badger.Txn, timeTill int64, queue []byte, tas
 }
 
 func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
-	timeTillLease := time.Now().Add(db.config.LeaseDuration).Unix()
+	timeTillLease := db.clock.Now().Add(db.config.LeaseDuration).Unix()
 	err := db.pushToZSetQueue(txn, timeTillLease, queue, taskID, []byte(leaseState), true)
 	if err != nil {
 		return err
@@ -464,52 +470,10 @@ func (db *DB) MoveToCompletedFromActive(queue []byte, taskID string) error {
 	})
 }
 
-func (db *DB) MoveToFromRetry(queue []byte, taskID string) error {
-	return db.db.Update(func(txn *badger.Txn) error {
-		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
-			return pausedErr
-		}
-
-		taskRef, err := db.getReference(txn, queue, taskID)
-		if err != nil {
-			return err
-		}
-
-		deleteErr := txn.Delete([]byte(taskRef.Key))
-		if deleteErr != nil {
-			return deleteErr
-		}
-
-		task, err := db.getTask(txn, taskID)
-		if err != nil {
-			return err
-		}
-		if task == nil {
-			return ErrNotFound
-		}
-
-		stateToMove := generated.State_ARCHIVED
-		task.State = stateToMove
-		taskBytes, err := db.marshalTask(task)
-		if err != nil {
-			return err
-		}
-
-		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
-			return setErr
-		}
-
-		if pushErr := db.pushToList(txn, queue, []byte(stateToMove.String()), taskID); pushErr != nil {
-			return pushErr
-		}
-		return nil
-	})
-}
-
 func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 	err := db.db.Update(func(txn *badger.Txn) error {
 		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
-			return pausedErr
+			return errors.Wrap(pausedErr, "failed to check paused queue")
 		}
 
 		// always delete before overwriting the reference
@@ -517,51 +481,51 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 		// delete from the active queue
 		taskRef, err := db.getReference(txn, queue, taskID)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to get reference")
 		}
 
+		db.logger.Debug("task ref", "reference", taskRef)
 		// delete from the existing queue - active
 		err = txn.Delete([]byte(taskRef.Key))
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete from active queue")
 		}
 
 		// delete the lease
 		err = txn.Delete([]byte(taskRef.LeaseKey))
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete lease")
 		}
 
 		task, err := db.getTask(txn, taskID)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to get task")
 		}
 		if task == nil {
-			return ErrNotFound
+			return errors.Wrap(ErrNotFound, "task not found")
 		}
 
 		task.State = generated.State_RETRY
 		taskBytes, err := db.marshalTask(task)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to marshal task")
 		}
 
 		err = txn.Set(keyTask(taskID), taskBytes)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to set task")
 		}
 
-		retryTime := db.config.RetryFn(time.Now())
-		// TODO: fix the reference tracking for zset
+		retryTime := db.config.RetryFn(db.clock.Now())
 		err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskID, []byte(generated.State_RETRY.String()), false)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to push to zset")
 		}
 
 		return nil
 	})
 	if err != nil {
-		return err
+		return errors.Wrap(err, "MoveToRetryFromActive")
 	}
 	return nil
 }
@@ -629,42 +593,90 @@ func (db *DB) checkPausedQueue(txn *badger.Txn, queue []byte) error {
 }
 
 func (db *DB) MoveToPendingFromRetry(queue []byte, taskID string) error {
-	return db.db.Update(func(txn *badger.Txn) error {
-		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
-			return pausedErr
-		}
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		return db.processRetryQueue(txn, queue, taskID)
+	}); err != nil {
+		return errors.Wrap(err, "MoveToPendingFromRetry")
+	}
+	return nil
+}
 
-		taskRef, err := db.getReference(txn, queue, taskID)
-		if err != nil {
-			return err
-		}
+func (db *DB) processRetryQueue(txn *badger.Txn, queue []byte, taskID string) error {
+	if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+		return pausedErr
+	}
 
-		deleteErr := txn.Delete([]byte(taskRef.Key))
-		if deleteErr != nil {
-			return deleteErr
-		}
+	taskRef, err := db.getReference(txn, queue, taskID)
+	if err != nil {
+		return err
+	}
 
-		task, err := db.getTask(txn, taskID)
-		if err != nil {
-			return err
-		}
-		if task == nil {
-			return ErrNotFound
-		}
+	deleteErr := txn.Delete([]byte(taskRef.Key))
+	if deleteErr != nil {
+		return deleteErr
+	}
 
-		task.State = generated.State_PENDING
-		taskBytes, err := db.marshalTask(task)
-		if err != nil {
-			return err
-		}
+	task, err := db.getTask(txn, taskID)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return ErrNotFound
+	}
 
-		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
-			return setErr
-		}
+	task.State = generated.State_PENDING
+	taskBytes, err := db.marshalTask(task)
+	if err != nil {
+		return err
+	}
 
-		if pushErr := db.pushToList(txn, queue, []byte(generated.State_PENDING.String()), taskID); pushErr != nil {
-			return pushErr
+	if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
+		return setErr
+	}
+
+	if pushErr := db.pushToList(txn, queue, []byte(generated.State_PENDING.String()), taskID); pushErr != nil {
+		return pushErr
+	}
+	return nil
+}
+
+// Foward moves tasks from retry state to pending state
+func (db *DB) Forward(queue []byte, now int64) error {
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		// iterate and foward all which are behind the timestamp in zset
+		prefix := fmt.Sprintf("pizza:%s:%s:", queue, generated.State_RETRY.String())
+		upperBound := fmt.Sprintf("%s%020d", prefix, now)
+
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(prefix)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+			if bytes.Compare(key, []byte(upperBound)) > 0 {
+				break
+			}
+
+			taskID := db.taskIDFromKeyOfZset(key)
+			if err := db.processRetryQueue(txn, queue, string(taskID)); err != nil {
+				return err
+			}
+
+			db.logger.Debug("items pushed to pending", "key", string(key))
 		}
 		return nil
-	})
+	}); err != nil {
+		return errors.Wrap(err, "Forward")
+	}
+	return nil
+}
+
+func (db *DB) taskIDFromKeyOfZset(key []byte) []byte {
+	idx := bytes.LastIndexByte(key, ':')
+	if idx == -1 || idx+1 >= len(key) {
+		return nil
+	}
+	return key[idx+1:]
 }
