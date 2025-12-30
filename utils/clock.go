@@ -39,6 +39,6 @@ func (fcl *FakeClock) Now() time.Time {
 
 	old := fcl.t
 	fcl.t = fcl.t.Add(fcl.interval)
-	fcl.l.Debug("moving forward", "curr", old.UTC(), "new", fcl.t.UTC())
+	fcl.l.Debug("clock moving forward", "curr", old.UTC(), "new", fcl.t.UTC())
 	return old
 }
