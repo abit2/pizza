@@ -18,11 +18,10 @@ import (
 	"github.com/stretchr/testify/suite"
 )
 
-const path = "./processor_data"
-
 type ProcessorTestSuite struct {
 	suite.Suite
-	bdb *badger.DB
+	path string
+	bdb  *badger.DB
 }
 
 func TestProcessorTestSuite(t *testing.T) {
@@ -47,15 +46,17 @@ func (suite *ProcessorTestSuite) SetupSuite() {
 	if suite.bdb != nil {
 		return
 	}
-	suite.bdb, err = badger.Open(badger.DefaultOptions(path))
+	suite.path = "./processor_data"
+	suite.bdb, err = badger.Open(badger.DefaultOptions(suite.path))
 	require.NoError(suite.T(), err)
+
 }
 
 func (suite *ProcessorTestSuite) TearDownSuite() {
 	err := suite.bdb.Close()
 	require.NoError(suite.T(), err)
 	// Remove all items from the queue
-	err = os.RemoveAll(path)
+	err = os.RemoveAll(suite.path)
 	require.NoError(suite.T(), err)
 }
 

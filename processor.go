@@ -53,14 +53,14 @@ func (p *Processor) start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			p.logger.Info("ctx done")
+			p.logger.Info("processor: ctx done")
 			return
 
 		default:
 			for _, queue := range p.cfg.Queues {
 				select {
 				case <-ctx.Done():
-					p.logger.Info("ctx done")
+					p.logger.Info("processor: ctx done")
 					return
 				case p.sema <- struct{}{}:
 					task, dequeueErr := p.db.Dequeue([]byte(queue))

@@ -54,6 +54,7 @@ func (prom *Promise) start(ctx context.Context) {
 }
 
 func (prom *Promise) exec(ctx context.Context) error {
+	prom.logger.Debug("exec promise")
 	var err error
 	for _, queue := range prom.queues {
 		timeUntil := prom.clock.Now()
