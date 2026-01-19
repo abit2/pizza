@@ -21,7 +21,7 @@ import (
 )
 
 func TestServer(t *testing.T) {
-	l := slogLogger()
+	l := testSlogLogger()
 	path := "./server"
 	defer func() {
 		l.Info("removing os.RemoveAll")
@@ -101,7 +101,7 @@ func (dh *DummyHandler) Process(ctx context.Context, task *generated.Task) error
 	return errors.New("try again")
 }
 
-func slogLogger() *log.Logger {
+func testSlogLogger() *log.Logger {
 	lvl := new(slog.LevelVar)
 	lvl.Set(slog.LevelDebug)
 	return log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -57,7 +58,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_dequeue")
 	headers := []byte("headers")
 	maxRetryCount := uint32(2)
 
@@ -177,6 +178,79 @@ func (suite *OpstTestSuite) TestDequeue() {
 	require.Equal(t, len(taskKeys), activeSeqCount)
 }
 
+func (suite *OpstTestSuite) TestExtendLease() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	// use fake clock so lease extension moves time forward deterministically
+	start := time.Now()
+	fakeClock := utils.NewFakeClock(start, l, time.Second)
+	dbWrap, err := New(bdb, l, &Config{
+		LeaseDuration: defaultLeaseDuration,
+		RetryFn:       defaultRetryFn,
+	}, fakeClock)
+	require.NoError(t, err)
+
+	queue := []byte("hello_extend_lease")
+	headers := []byte("headers")
+	maxRetryCount := uint32(1)
+
+	taskIDBytes, err := dbWrap.Enqueue(queue, []byte("payload"), headers, maxRetryCount)
+	require.NoError(t, err)
+	taskID := string(taskIDBytes)
+
+	// move task to active which creates initial lease
+	_, err = dbWrap.Dequeue(queue)
+	require.NoError(t, err)
+
+	var oldLeaseKey string
+	var oldLeaseTs time.Time
+
+	// capture original lease key and timestamp
+	err = bdb.View(func(txn *badger.Txn) error {
+		taskRefItem := getRefItem(t, txn, queue, taskID)
+		require.NotEmpty(t, taskRefItem.LeaseKey)
+
+		oldLeaseKey = taskRefItem.LeaseKey
+		oldLeaseTs = getTsFromKey(t, taskRefItem.LeaseKey)
+
+		// original lease key must exist
+		leaseItem, err := txn.Get([]byte(taskRefItem.LeaseKey))
+		require.NoError(t, err)
+		require.NotNil(t, leaseItem)
+		return nil
+	})
+	require.NoError(t, err)
+
+	// extend lease
+	require.NoError(t, dbWrap.ExtendLease(context.Background(), string(queue), taskID))
+
+	// verify that:
+	// - lease key changed
+	// - old lease key was deleted
+	// - new lease key exists with later timestamp
+	err = bdb.View(func(txn *badger.Txn) error {
+		taskRefItem := getRefItem(t, txn, queue, taskID)
+		require.NotEmpty(t, taskRefItem.LeaseKey)
+		require.NotEqual(t, oldLeaseKey, taskRefItem.LeaseKey)
+
+		// old lease key should be gone
+		_, err := txn.Get([]byte(oldLeaseKey))
+		require.Error(t, err)
+
+		newLeaseTs := getTsFromKey(t, taskRefItem.LeaseKey)
+		require.True(t, newLeaseTs.After(oldLeaseTs), "expected extended lease ts to be after original")
+
+		// new lease key must exist
+		leaseItem, err := txn.Get([]byte(taskRefItem.LeaseKey))
+		require.NoError(t, err)
+		require.NotNil(t, leaseItem)
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	t := suite.T()
 	bdb := suite.bdb
@@ -187,7 +261,7 @@ func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_move_to_pending_from_retry")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
@@ -299,7 +373,7 @@ func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_archived_from_active")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
@@ -361,7 +435,7 @@ func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_completed_from_active")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
@@ -432,7 +506,7 @@ func (suite *OpstTestSuite) TestForward() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_forward")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 

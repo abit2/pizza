@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -39,6 +40,41 @@ import (
 const (
 	defaultLeaseDuration = 30 * time.Second
 )
+
+// ExtendLease extends the lease for an active task by pushing a new lease key
+// with the configured lease duration and deleting the previous lease key.
+func (db *DB) ExtendLease(_ context.Context, qname, id string) error {
+	queue := []byte(qname)
+	taskID := id
+
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return errors.Wrap(pausedErr, "failed to check paused queue")
+		}
+
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return errors.Wrap(err, "failed to get reference")
+		}
+
+		// delete the previous lease key (if any)
+		if taskRef.LeaseKey != "" {
+			if err := txn.Delete([]byte(taskRef.LeaseKey)); err != nil {
+				return errors.Wrap(err, "failed to delete previous lease")
+			}
+		}
+
+		// lease task
+		if err := db.leaseTask(txn, queue, taskID); err != nil {
+			return errors.Wrap(err, "failed to lease task")
+		}
+
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "ExtendLease")
+	}
+	return nil
+}
 
 var (
 	ErrQueuePaused = errors.New("queue is paused")
