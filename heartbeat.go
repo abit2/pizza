@@ -9,7 +9,7 @@ import (
 )
 
 type heartBeatDB interface {
-	ExtendLease(ctx context.Context, qname, id string) error
+	ExtendLease(ctx context.Context, qname, id string) (int64, error)
 }
 
 type heartBeat struct {
@@ -91,12 +91,14 @@ func (hb *heartBeat) exec(ctx context.Context) error {
 
 		// extend lease when it's about to expire (but not yet expired)
 		if info.LeaseTill.Sub(now) <= hb.durationBeforeLeaseExpiry {
-			if err := hb.db.ExtendLease(ctx, info.QueueName, info.ID); err != nil {
+			leaseTill, err := hb.db.ExtendLease(ctx, info.QueueName, info.ID)
+			if err != nil {
 				hb.logger.Error("err extend lease", "err", err.Error())
 				if firstErr == nil {
 					firstErr = err
 				}
 			}
+			info.LeaseTill = time.Unix(leaseTill, 0)
 		}
 		return true
 	})

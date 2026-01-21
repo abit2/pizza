@@ -18,12 +18,12 @@ type fakeHeartBeatDB struct {
 	returnErr error
 }
 
-func (f *fakeHeartBeatDB) ExtendLease(_ context.Context, qname, id string) error {
+func (f *fakeHeartBeatDB) ExtendLease(_ context.Context, qname, id string) (int64, error) {
 	f.calls = append(f.calls, struct {
 		qname string
 		id    string
 	}{qname: qname, id: id})
-	return f.returnErr
+	return time.Now().Unix(), f.returnErr
 }
 
 func newTestHeartBeat(t *testing.T, db heartBeatDB, durationBeforeExpiry time.Duration, expiredCh chan<- *taskInfoHeartBeat) *heartBeat {

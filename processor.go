@@ -3,6 +3,7 @@ package pizza
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
@@ -32,7 +33,9 @@ type Processor struct {
 	sema chan struct{}
 	cfg  *ProcessorConfig
 
-	handler map[string]Handler
+	handler       map[string]Handler
+	claimedTasks  chan *taskInfoHeartBeat
+	finishedTasks chan *taskInfoHeartBeat
 }
 
 type ProcessorConfig struct {
@@ -40,12 +43,14 @@ type ProcessorConfig struct {
 	Queues         []string
 }
 
-func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig) *Processor {
+func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig, claimedTasks chan *taskInfoHeartBeat, finishedTasks chan *taskInfoHeartBeat) *Processor {
 	return &Processor{
-		logger: l,
-		db:     db,
-		sema:   make(chan struct{}, cfg.MaxConcurrency),
-		cfg:    cfg,
+		logger:        l,
+		db:            db,
+		sema:          make(chan struct{}, cfg.MaxConcurrency),
+		cfg:           cfg,
+		claimedTasks:  claimedTasks,
+		finishedTasks: finishedTasks,
 	}
 }
 
@@ -69,9 +74,25 @@ func (p *Processor) start(ctx context.Context) {
 					}
 
 					if dequeueErr == nil {
+						// Emit claimed task event
+						p.claimedTasks <- &taskInfoHeartBeat{
+							ID:        task.GetId(),
+							QueueName: queue,
+							LeaseTill: time.Now().Add(defaultLeaseDuration),
+							StartTime: time.Now(),
+						}
+
 						err := p.handleExecResult(ctx, p.exec(ctx, task), task, queue)
 						if err != nil {
 							p.logger.Error("exec err", "err", err)
+						} else {
+							// Emit finished task event
+							p.finishedTasks <- &taskInfoHeartBeat{
+								ID:        task.GetId(),
+								QueueName: queue,
+								LeaseTill: time.Now(),
+								StartTime: time.Now(),
+							}
 						}
 					}
 

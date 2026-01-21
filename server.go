@@ -9,13 +9,6 @@ import (
 	"github.com/abit2/pizza/log"
 )
 
-const (
-	heartBeatInterval         = 1 * time.Second
-	heartBeatExtendBeforeExpr = 5 * time.Second
-
-	heartBeatChannelBufferSize = 100
-)
-
 type Server struct {
 	logger    *log.Logger
 	serverCfg *ServerConfig
@@ -50,7 +43,7 @@ func (s *Server) Run(ctx context.Context, wg *sync.WaitGroup) {
 	s.processor = NewProcessor(s.logger, s.db, &ProcessorConfig{
 		MaxConcurrency: s.serverCfg.Concurrency,
 		Queues:         s.serverCfg.Queues,
-	})
+	}, s.claimedTasks, s.finishedTasks)
 
 	promise := NewPromise(s.logger, s.serverCfg.PromiseInterval, s.serverCfg.Queues, s.db, s.cl)
 

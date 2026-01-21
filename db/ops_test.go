@@ -224,7 +224,8 @@ func (suite *OpstTestSuite) TestExtendLease() {
 	require.NoError(t, err)
 
 	// extend lease
-	require.NoError(t, dbWrap.ExtendLease(context.Background(), string(queue), taskID))
+	_, err = dbWrap.ExtendLease(context.Background(), string(queue), taskID)
+	require.NoError(t, err)
 
 	// verify that:
 	// - lease key changed
