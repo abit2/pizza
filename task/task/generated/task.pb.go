@@ -77,13 +77,15 @@ func (State) EnumDescriptor() ([]byte, []int) {
 }
 
 type Task struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
-	State         State                  `protobuf:"varint,3,opt,name=state,proto3,enum=task.State" json:"state,omitempty"`
-	Headers       []byte                 `protobuf:"bytes,4,opt,name=headers,proto3" json:"headers,omitempty"`
-	RetryCount    uint32                 `protobuf:"varint,5,opt,name=retryCount,proto3" json:"retryCount,omitempty"`
-	MaxRetries    uint32                 `protobuf:"varint,6,opt,name=maxRetries,proto3" json:"maxRetries,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Id      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Payload []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	State   State                  `protobuf:"varint,3,opt,name=state,proto3,enum=task.State" json:"state,omitempty"`
+	// headers are supposed to be used to send info to the deeper layers
+	// nothing will be changes/updated/manipulated on the pizza system itself
+	Headers       []byte `protobuf:"bytes,4,opt,name=headers,proto3" json:"headers,omitempty"`
+	RetryCount    uint32 `protobuf:"varint,5,opt,name=retryCount,proto3" json:"retryCount,omitempty"`
+	MaxRetries    uint32 `protobuf:"varint,6,opt,name=maxRetries,proto3" json:"maxRetries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

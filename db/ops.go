@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"strconv"
@@ -40,6 +41,43 @@ const (
 	defaultLeaseDuration = 30 * time.Second
 )
 
+// ExtendLease extends the lease for an active task by pushing a new lease key
+// with the configured lease duration and deleting the previous lease key.
+func (db *DB) ExtendLease(_ context.Context, qname, id string) (int64, error) {
+	queue := []byte(qname)
+	taskID := id
+	var leaseTill int64
+
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return errors.Wrap(pausedErr, "failed to check paused queue")
+		}
+
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return errors.Wrap(err, "failed to get reference")
+		}
+
+		// delete the previous lease key (if any)
+		if taskRef.LeaseKey != "" {
+			if err := txn.Delete([]byte(taskRef.LeaseKey)); err != nil {
+				return errors.Wrap(err, "failed to delete previous lease")
+			}
+		}
+
+		// lease task
+		leaseTill, err = db.leaseTask(txn, queue, taskID)
+		if err != nil {
+			return errors.Wrap(err, "failed to lease task")
+		}
+
+		return nil
+	}); err != nil {
+		return 0, errors.Wrap(err, "ExtendLease")
+	}
+	return leaseTill, nil
+}
+
 var (
 	ErrQueuePaused = errors.New("queue is paused")
 	ErrNotFound    = errors.New("not found")
@@ -72,6 +110,9 @@ func New(db *badger.DB, logger *log.Logger, config *Config, cl Clock) (*DB, erro
 			LeaseDuration: defaultLeaseDuration,
 			RetryFn:       defaultRetryFn,
 		}
+	}
+	if config.LeaseDuration < defaultLeaseDuration {
+		config.LeaseDuration = defaultLeaseDuration
 	}
 	return &DB{db: db, logger: logger, config: config, clock: cl}, nil
 }
@@ -198,7 +239,8 @@ func (db *DB) Dequeue(queue []byte) (*generated.Task, error) {
 		}
 
 		// lease task
-		if err := db.leaseTask(txn, queue, taskID); err != nil {
+		_, err := db.leaseTask(txn, queue, taskID)
+		if err != nil {
 			return err
 		}
 
@@ -355,14 +397,14 @@ func (db *DB) pushToZSetQueue(txn *badger.Txn, timeTill int64, queue []byte, tas
 	return nil
 }
 
-func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
+func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) (int64, error) {
 	timeTillLease := db.clock.Now().Add(db.config.LeaseDuration).Unix()
 	err := db.pushToZSetQueue(txn, timeTillLease, queue, taskID, []byte(leaseState), true)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	return timeTillLease, nil
 }
 
 func (db *DB) MoveToArchivedFromActive(queue []byte, taskID string) error {
