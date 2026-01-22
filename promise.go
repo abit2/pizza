@@ -24,6 +24,7 @@ type Promise struct {
 	queues      []string
 	forwarder   Forwarder
 	clock       Clock
+	done        chan struct{}
 }
 
 func NewPromise(l *log.Logger, interval time.Duration, queues []string, f Forwarder, cl Clock) *Promise {
@@ -33,6 +34,7 @@ func NewPromise(l *log.Logger, interval time.Duration, queues []string, f Forwar
 		queues:      queues,
 		forwarder:   f,
 		clock:       cl,
+		done:        make(chan struct{}),
 	}
 }
 
@@ -45,12 +47,16 @@ func (prom *Promise) start(ctx context.Context) {
 				prom.logger.Error("err exec", "err", err.Error())
 			}
 			timer.Reset(prom.avgInterval)
-		case <-ctx.Done():
+		case <-prom.done:
+			timer.Stop()
 			prom.logger.Info("promise job: ctx cancelled")
 			return
 		}
 	}
+}
 
+func (prom *Promise) stop() {
+	close(prom.done)
 }
 
 func (prom *Promise) exec(ctx context.Context) error {

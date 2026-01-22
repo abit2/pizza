@@ -26,7 +26,7 @@ func (f *fakeHeartBeatDB) ExtendLease(_ context.Context, qname, id string) (int6
 	return time.Now().Unix(), f.returnErr
 }
 
-func newTestHeartBeat(t *testing.T, db heartBeatDB, durationBeforeExpiry time.Duration, expiredCh chan<- *taskInfoHeartBeat) *heartBeat {
+func newTestHeartBeat(t *testing.T, db heartBeatDB, durationBeforeExpiry time.Duration, expiredCh chan<- *taskInfoHeartBeat) *HeartBeat {
 	t.Helper()
 
 	if db == nil {

@@ -17,7 +17,8 @@ type Server struct {
 
 	// internals
 	processor *Processor
-	heartBeat *heartBeat
+	heartBeat *HeartBeat
+	promise   *Promise
 
 	claimedTasks  chan *taskInfoHeartBeat
 	finishedTasks chan *taskInfoHeartBeat
@@ -28,14 +29,22 @@ type ServerConfig struct {
 	Queues          []string
 	Concurrency     int
 	PromiseInterval time.Duration
+
+	GracefulShutdownTimeout time.Duration
 }
 
 func NewServer(l *log.Logger, db *db.DB, cfg *ServerConfig, cl Clock) *Server {
+	if cfg != nil && cfg.GracefulShutdownTimeout <= 0 {
+		cfg.GracefulShutdownTimeout = 2 * time.Second
+	}
 	return &Server{
-		logger:    l,
-		db:        db,
-		serverCfg: cfg,
-		cl:        cl,
+		logger:        l,
+		db:            db,
+		serverCfg:     cfg,
+		cl:            cl,
+		claimedTasks:  make(chan *taskInfoHeartBeat, heartBeatChannelBufferSize),
+		finishedTasks: make(chan *taskInfoHeartBeat, heartBeatChannelBufferSize),
+		expiredTasks:  make(chan *taskInfoHeartBeat, heartBeatChannelBufferSize),
 	}
 }
 
@@ -45,15 +54,10 @@ func (s *Server) Run(ctx context.Context, wg *sync.WaitGroup) {
 		Queues:         s.serverCfg.Queues,
 	}, s.claimedTasks, s.finishedTasks)
 
-	promise := NewPromise(s.logger, s.serverCfg.PromiseInterval, s.serverCfg.Queues, s.db, s.cl)
+	s.promise = NewPromise(s.logger, s.serverCfg.PromiseInterval, s.serverCfg.Queues, s.db, s.cl)
 
 	// Heartbeat is responsible for extending active task leases and emitting events
 	// when leases have expired (to be recovered/requeued).
-	//
-	// TODO: wire claimedTasks/finishedTasks events from processor/worker execution.
-	s.claimedTasks = make(chan *taskInfoHeartBeat, heartBeatChannelBufferSize)
-	s.finishedTasks = make(chan *taskInfoHeartBeat, heartBeatChannelBufferSize)
-	s.expiredTasks = make(chan *taskInfoHeartBeat, heartBeatChannelBufferSize)
 	s.heartBeat = NewHearBeater(
 		s.logger,
 		heartBeatInterval,
@@ -70,13 +74,26 @@ func (s *Server) Run(ctx context.Context, wg *sync.WaitGroup) {
 	})
 
 	wg.Go(func() {
-		promise.start(ctx)
+		s.promise.start(ctx)
 	})
 
 	wg.Go(func() {
 		s.heartBeat.start(ctx)
 	})
-	s.logger.Debug("started promise & processor jobs")
+	s.logger.Debug("started promise, heartbeat & processor jobs")
+}
+
+func (s *Server) Stop() {
+	s.processor.stop()
+	s.promise.stop()
+
+	s.wait()
+
+	s.heartBeat.stop()
+}
+
+func (s *Server) wait() {
+	time.Sleep(s.serverCfg.GracefulShutdownTimeout)
 }
 
 func (s *Server) SetupHandler(handleMapping map[string]Handler) {

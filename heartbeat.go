@@ -12,13 +12,15 @@ type heartBeatDB interface {
 	ExtendLease(ctx context.Context, qname, id string) (int64, error)
 }
 
-type heartBeat struct {
+type HeartBeat struct {
 	logger      *log.Logger
 	avgInterval time.Duration
 
 	claimed      <-chan *taskInfoHeartBeat
 	finished     <-chan *taskInfoHeartBeat
 	expiredTasks chan<- *taskInfoHeartBeat
+
+	done chan struct{}
 
 	tasks sync.Map
 
@@ -33,8 +35,8 @@ type taskInfoHeartBeat struct {
 	StartTime time.Time
 }
 
-func NewHearBeater(l *log.Logger, interval time.Duration, claimed, finished <-chan *taskInfoHeartBeat, expiredTasks chan<- *taskInfoHeartBeat, db heartBeatDB, durationBeforeLeaseExpiry time.Duration) *heartBeat {
-	return &heartBeat{
+func NewHearBeater(l *log.Logger, interval time.Duration, claimed, finished <-chan *taskInfoHeartBeat, expiredTasks chan<- *taskInfoHeartBeat, db heartBeatDB, durationBeforeLeaseExpiry time.Duration) *HeartBeat {
+	return &HeartBeat{
 		logger:                    l,
 		avgInterval:               interval,
 		claimed:                   claimed,
@@ -42,10 +44,11 @@ func NewHearBeater(l *log.Logger, interval time.Duration, claimed, finished <-ch
 		expiredTasks:              expiredTasks,
 		durationBeforeLeaseExpiry: durationBeforeLeaseExpiry,
 		db:                        db,
+		done:                      make(chan struct{}),
 	}
 }
 
-func (hb *heartBeat) start(ctx context.Context) {
+func (hb *HeartBeat) start(ctx context.Context) {
 	timer := time.NewTimer(5 * time.Millisecond)
 	for {
 		select {
@@ -54,8 +57,11 @@ func (hb *heartBeat) start(ctx context.Context) {
 				hb.logger.Error("err exec", "err", err.Error())
 			}
 			timer.Reset(hb.avgInterval)
-		case <-ctx.Done():
-			hb.logger.Info("promise job: ctx cancelled")
+			// case <-ctx.Done():
+			// 	hb.logger.Info("heartbeat: ctx cancelled")
+			return
+		case <-hb.done:
+			hb.logger.Info("heartbeat: done")
 			return
 		case info := <-hb.claimed:
 			hb.tasks.Store(info.ID, info)
@@ -65,7 +71,11 @@ func (hb *heartBeat) start(ctx context.Context) {
 	}
 }
 
-func (hb *heartBeat) exec(ctx context.Context) error {
+func (hb *HeartBeat) stop() {
+	close(hb.done)
+}
+
+func (hb *HeartBeat) exec(ctx context.Context) error {
 	now := time.Now()
 	var firstErr error
 

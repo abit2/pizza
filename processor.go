@@ -36,6 +36,8 @@ type Processor struct {
 	handler       map[string]Handler
 	claimedTasks  chan *taskInfoHeartBeat
 	finishedTasks chan *taskInfoHeartBeat
+
+	done chan struct{}
 }
 
 type ProcessorConfig struct {
@@ -51,21 +53,28 @@ func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig, claimedTasks chan 
 		cfg:           cfg,
 		claimedTasks:  claimedTasks,
 		finishedTasks: finishedTasks,
+		done:          make(chan struct{}),
 	}
+}
+
+func (p *Processor) stop() {
+	close(p.claimedTasks)
+	close(p.finishedTasks)
+	close(p.done)
 }
 
 func (p *Processor) start(ctx context.Context) {
 	for {
 		select {
-		case <-ctx.Done():
-			p.logger.Info("processor: ctx done")
+		case <-p.done:
+			p.logger.Info("processor: done")
 			return
 
 		default:
 			for _, queue := range p.cfg.Queues {
 				select {
-				case <-ctx.Done():
-					p.logger.Info("processor: ctx done")
+				case <-p.done:
+					p.logger.Info("processor: done")
 					return
 				case p.sema <- struct{}{}:
 					task, dequeueErr := p.db.Dequeue([]byte(queue))

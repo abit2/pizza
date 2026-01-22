@@ -50,7 +50,7 @@ func TestServer(t *testing.T) {
 		PromiseInterval: 1 * time.Second,
 	}, fakeClock)
 
-	ctx, cancel := context.WithCancel(context.TODO())
+	ctx := context.TODO()
 	var wg sync.WaitGroup
 
 	wg.Go(func() {
@@ -79,7 +79,7 @@ func TestServer(t *testing.T) {
 
 	l.Debug("starting to sleep")
 	time.Sleep(2 * time.Second)
-	cancel()
+	taskServer.Stop()
 
 	wg.Wait()
 
