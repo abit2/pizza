@@ -63,7 +63,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 	maxRetryCount := uint32(2)
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 	}
@@ -196,7 +196,7 @@ func (suite *OpstTestSuite) TestExtendLease() {
 	headers := []byte("headers")
 	maxRetryCount := uint32(1)
 
-	taskIDBytes, err := dbWrap.Enqueue(queue, []byte("payload"), headers, maxRetryCount)
+	taskIDBytes, err := dbWrap.Enqueue(queue, []byte("payload"), headers, maxRetryCount, defaultTimeToExec)
 	require.NoError(t, err)
 	taskID := string(taskIDBytes)
 
@@ -265,14 +265,17 @@ func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	queue := []byte("hello_move_to_pending_from_retry")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
+	var taskIDs []string
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
-	for taskID, payload := range taskKeys {
+	for _, taskID := range taskIDs {
+		payload := taskKeys[taskID]
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
@@ -378,13 +381,16 @@ func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
+	var taskIDs []string
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
-	for taskID, payload := range taskKeys {
+	for _, taskID := range taskIDs {
+		payload := taskKeys[taskID]
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
@@ -440,13 +446,17 @@ func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
+	var taskIDs []string
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
-	for taskID, payload := range taskKeys {
+	for _, taskID := range taskIDs {
+		payload := taskKeys[taskID]
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
@@ -510,17 +520,19 @@ func (suite *OpstTestSuite) TestForward() {
 	queue := []byte("hello_forward")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
+	var taskIDs []string
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
 	var taskIDMovedWithForwarder []string
 	var taskIDNotMovedWithForwarder []string
 	idx := 0
-	for taskID, _ := range taskKeys {
+	for _, taskID := range taskIDs {
 		// 1 minutes
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)

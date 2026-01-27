@@ -86,6 +86,7 @@ type Task struct {
 	Headers       []byte `protobuf:"bytes,4,opt,name=headers,proto3" json:"headers,omitempty"`
 	RetryCount    uint32 `protobuf:"varint,5,opt,name=retryCount,proto3" json:"retryCount,omitempty"`
 	MaxRetries    uint32 `protobuf:"varint,6,opt,name=maxRetries,proto3" json:"maxRetries,omitempty"`
+	TimeToExecute uint64 `protobuf:"varint,7,opt,name=timeToExecute,proto3" json:"timeToExecute,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -162,6 +163,13 @@ func (x *Task) GetMaxRetries() uint32 {
 	return 0
 }
 
+func (x *Task) GetTimeToExecute() uint64 {
+	if x != nil {
+		return x.TimeToExecute
+	}
+	return 0
+}
+
 type TaskReference struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -227,7 +235,7 @@ var File_task_proto protoreflect.FileDescriptor
 const file_task_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"task.proto\x12\x04task\"\xad\x01\n" +
+	"task.proto\x12\x04task\"\xd3\x01\n" +
 	"\x04Task\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\x12!\n" +
@@ -238,7 +246,8 @@ const file_task_proto_rawDesc = "" +
 	"retryCount\x12\x1e\n" +
 	"\n" +
 	"maxRetries\x18\x06 \x01(\rR\n" +
-	"maxRetries\"M\n" +
+	"maxRetries\x12$\n" +
+	"\rtimeToExecute\x18\a \x01(\x04R\rtimeToExecute\"M\n" +
 	"\rTaskReference\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x1a\n" +

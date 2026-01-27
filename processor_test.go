@@ -35,7 +35,7 @@ func insertSomeData(t *testing.T, db *db.DB, queues []string, taskTypeMapping ma
 		headers := map[string]string{TaskType: taskTypeMapping[queue]}
 		hbyte, err := json.Marshal(headers)
 		require.NoError(t, err)
-		taskId, err := db.Enqueue([]byte(queue), []byte("hello world"), hbyte, 3)
+		taskId, err := db.Enqueue([]byte(queue), []byte("hello world"), hbyte, 3, 0)
 		require.NoError(t, err)
 		require.NotNil(t, taskId)
 	}
@@ -95,14 +95,13 @@ func (suite *ProcessorTestSuite) Test_Start() {
 	})
 
 	ctx := context.Background()
-	ctxWithCancel, cancel := context.WithCancel(ctx)
 	go func() {
-		p.start(ctxWithCancel)
+		p.start(ctx)
 	}()
 
 	time.Sleep(300 * time.Millisecond)
 	l.Info("cancelling")
-	cancel()
+	p.stop()
 	require.Equal(t, len(queues), int(d.count.Load()))
 }
 

@@ -29,10 +29,12 @@ type HeartBeat struct {
 }
 
 type taskInfoHeartBeat struct {
-	ID        string
-	QueueName string
-	LeaseTill time.Time
-	StartTime time.Time
+	ID          string
+	QueueName   string
+	LeaseTill   time.Time
+	StartTime   time.Time
+	FinishTime  time.Time
+	ExecTimeout time.Time
 }
 
 func NewHearBeater(l *log.Logger, interval time.Duration, claimed, finished <-chan *taskInfoHeartBeat, expiredTasks chan<- *taskInfoHeartBeat, db heartBeatDB, durationBeforeLeaseExpiry time.Duration) *HeartBeat {
@@ -80,35 +82,37 @@ func (hb *HeartBeat) exec(ctx context.Context) error {
 	var firstErr error
 
 	hb.tasks.Range(func(key, value any) bool {
-		info, ok := value.(*taskInfoHeartBeat)
-		if !ok || info == nil {
+		taskInfo, ok := value.(*taskInfoHeartBeat)
+		if !ok || taskInfo == nil {
 			return true
 		}
 
 		// if the lease is already expired, do not extend; requeue for recovery
-		if info.LeaseTill.Before(now) {
+		if taskInfo.LeaseTill.Before(now) {
 			// send expired task event to channel
 			select {
-			case hb.expiredTasks <- info:
+			case hb.expiredTasks <- taskInfo:
 			case <-ctx.Done():
 				return false
 			default:
 				// channel full or not ready, log but continue
-				hb.logger.Warn("expiredTasks channel full, dropping expired task event", "taskID", info.ID)
+				hb.logger.Warn("expiredTasks channel full, dropping expired task event", "taskID", taskInfo.ID)
 			}
 			return true
 		}
 
 		// extend lease when it's about to expire (but not yet expired)
-		if info.LeaseTill.Sub(now) <= hb.durationBeforeLeaseExpiry {
-			leaseTill, err := hb.db.ExtendLease(ctx, info.QueueName, info.ID)
+		if taskInfo.LeaseTill.Sub(now) <= hb.durationBeforeLeaseExpiry {
+			// check if exec ttl is expired already
+
+			leaseTill, err := hb.db.ExtendLease(ctx, taskInfo.QueueName, taskInfo.ID)
 			if err != nil {
 				hb.logger.Error("err extend lease", "err", err.Error())
 				if firstErr == nil {
 					firstErr = err
 				}
 			}
-			info.LeaseTill = time.Unix(leaseTill, 0)
+			taskInfo.LeaseTill = time.Unix(leaseTill, 0)
 		}
 		return true
 	})
