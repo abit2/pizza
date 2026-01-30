@@ -52,7 +52,7 @@ func (s *Server) Run(ctx context.Context, wg *sync.WaitGroup) {
 	s.processor = NewProcessor(s.logger, s.db, &ProcessorConfig{
 		MaxConcurrency: s.serverCfg.Concurrency,
 		Queues:         s.serverCfg.Queues,
-	}, s.claimedTasks, s.finishedTasks)
+	}, s.claimedTasks, s.finishedTasks, s.cl)
 
 	s.promise = NewPromise(s.logger, s.serverCfg.PromiseInterval, s.serverCfg.Queues, s.db, s.cl)
 

@@ -63,7 +63,7 @@ func (prom *Promise) exec(ctx context.Context) error {
 	prom.logger.Debug("exec promise")
 	var err error
 	for _, queue := range prom.queues {
-		timeUntil := prom.clock.Now()
+		timeUntil := prom.clock.Now().UTC()
 		if e := prom.forwarder.Forward([]byte(queue), timeUntil.Unix()); e != nil {
 			multierr.Append(err, e)
 		}

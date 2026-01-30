@@ -134,7 +134,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 			require.NoError(t, err)
 			require.NotNil(t, leaseBytes)
 			leaseTs := getTsFromKey(t, taskRefItem.LeaseKey)
-			fmt.Println("lease ts ", leaseTs, " time now ", time.Now())
+			fmt.Println("lease ts ", leaseTs, " time now ", time.Now().UTC())
 			require.True(t, time.Until(leaseTs) <= defaultLeaseDuration && time.Until(leaseTs) > 0)
 			// require.Equal(t, defaultLeaseDuration, time.Until(leaseTs))
 
@@ -164,8 +164,8 @@ func (suite *OpstTestSuite) TestDequeue() {
 			taskRefItem := getRefItem(t, txn, queue, tID)
 			require.Empty(t, taskRefItem.LeaseKey)
 			retryTs := getTsFromKey(t, taskRefItem.Key)
-			fmt.Println("retry ts ", retryTs, " time now ", time.Now())
-			require.True(t, time.Until(defaultRetryFn(time.Now())) >= time.Until(retryTs) && time.Until(retryTs) > 0)
+			fmt.Println("retry ts ", retryTs, " time now ", time.Now().UTC())
+			require.True(t, time.Until(defaultRetryFn(time.Now().UTC())) >= time.Until(retryTs) && time.Until(retryTs) > 0)
 
 			retryQBytes, err := txn.Get([]byte(taskRefItem.Key))
 			require.NoError(t, err)
@@ -184,7 +184,7 @@ func (suite *OpstTestSuite) TestExtendLease() {
 	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	// use fake clock so lease extension moves time forward deterministically
-	start := time.Now()
+	start := time.Now().UTC()
 	fakeClock := utils.NewFakeClock(start, l, time.Second)
 	dbWrap, err := New(bdb, l, &Config{
 		LeaseDuration: defaultLeaseDuration,
@@ -504,7 +504,7 @@ func (suite *OpstTestSuite) TestForward() {
 		Level: slog.LevelDebug,
 	})))
 
-	now := time.Now()
+	now := time.Now().UTC()
 	l.Info("time", "now", now.UTC(), "unix", now.Unix())
 	dbWrap, err := New(bdb, l, &Config{
 		LeaseDuration: defaultLeaseDuration,

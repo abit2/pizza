@@ -29,6 +29,7 @@ type DB interface {
 type Processor struct {
 	logger *log.Logger
 	db     DB
+	clock  Clock
 
 	sema chan struct{}
 	cfg  *ProcessorConfig
@@ -45,7 +46,7 @@ type ProcessorConfig struct {
 	Queues         []string
 }
 
-func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig, claimedTasks chan *taskInfoHeartBeat, finishedTasks chan *taskInfoHeartBeat) *Processor {
+func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig, claimedTasks chan *taskInfoHeartBeat, finishedTasks chan *taskInfoHeartBeat, cl Clock) *Processor {
 	return &Processor{
 		logger:        l,
 		db:            db,
@@ -54,13 +55,17 @@ func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig, claimedTasks chan 
 		claimedTasks:  claimedTasks,
 		finishedTasks: finishedTasks,
 		done:          make(chan struct{}),
+		clock:         cl,
 	}
 }
 
 func (p *Processor) stop() {
+	close(p.done)
+
+	time.Sleep(100 * time.Millisecond)
+
 	close(p.claimedTasks)
 	close(p.finishedTasks)
-	close(p.done)
 }
 
 func (p *Processor) start(ctx context.Context) {
@@ -84,7 +89,7 @@ func (p *Processor) start(ctx context.Context) {
 
 					if dequeueErr == nil {
 						// Emit claimed task event
-						now := time.Now()
+						now := p.clock.Now().UTC()
 						p.claimedTasks <- &taskInfoHeartBeat{
 							ID:        task.GetId(),
 							QueueName: queue,
@@ -100,7 +105,7 @@ func (p *Processor) start(ctx context.Context) {
 							p.finishedTasks <- &taskInfoHeartBeat{
 								ID:         task.GetId(),
 								QueueName:  queue,
-								FinishTime: time.Now().UTC(),
+								FinishTime: p.clock.Now().UTC(),
 							}
 						}
 					}

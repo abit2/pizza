@@ -35,7 +35,7 @@ func TestServer(t *testing.T) {
 		require.NoError(t, bdb.Close())
 	}()
 
-	staticTime := time.Now()
+	staticTime := time.Now().UTC()
 	fakeClock := utils.NewFakeClock(staticTime, l, 15*time.Second)
 	dbWrap, err := db.New(bdb, l, &db.Config{
 		LeaseDuration: 20 * time.Second,

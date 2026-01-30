@@ -8,10 +8,16 @@ import (
 	"github.com/abit2/pizza/log"
 )
 
+const (
+	//
+	defaultMaxLeaseExtension = 2 * time.Hour
+)
+
 type heartBeatDB interface {
 	ExtendLease(ctx context.Context, qname, id string) (int64, error)
 }
 
+// HeartBeat - only covers crashes of the server itself, which will recover the tasks in it.
 type HeartBeat struct {
 	logger      *log.Logger
 	avgInterval time.Duration
@@ -74,10 +80,13 @@ func (hb *HeartBeat) start(ctx context.Context) {
 
 func (hb *HeartBeat) stop() {
 	close(hb.done)
+	// TODO: make it configurable
+	time.Sleep(100 * time.Millisecond)
+	close(hb.expiredTasks)
 }
 
 func (hb *HeartBeat) exec(ctx context.Context) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	var firstErr error
 
 	hb.tasks.Range(func(key, value any) bool {
@@ -104,6 +113,24 @@ func (hb *HeartBeat) exec(ctx context.Context) error {
 		if taskInfo.LeaseTill.Sub(now) <= hb.durationBeforeLeaseExpiry {
 			// check if exec ttl is expired already
 
+			if taskInfo.StartTime.IsZero() {
+				taskInfo.StartTime = time.Now().UTC()
+			}
+			// check if the start time is more than max lease extension
+			if taskInfo.StartTime.Add(defaultMaxLeaseExtension).Before(now) {
+				// send expired task event to channel
+				select {
+				case hb.expiredTasks <- taskInfo:
+				case <-ctx.Done():
+					return false
+				default:
+					// channel full or not ready, log but continue
+					hb.logger.Warn("expiredTasks channel full, dropping expired task event", "taskID", taskInfo.ID)
+				}
+				return true
+			}
+
+			// extend lease
 			leaseTill, err := hb.db.ExtendLease(ctx, taskInfo.QueueName, taskInfo.ID)
 			if err != nil {
 				hb.logger.Error("err extend lease", "err", err.Error())

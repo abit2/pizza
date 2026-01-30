@@ -52,7 +52,7 @@ func TestHeartBeatExec_DoesNotExtendOrEmit_WhenLeaseFarFromExpiry(t *testing.T) 
 	expiredCh := make(chan *taskInfoHeartBeat, 1)
 	hb := newTestHeartBeat(t, fakeDB, time.Second, expiredCh)
 
-	now := time.Now()
+	now := time.Now().UTC()
 	info := &taskInfoHeartBeat{
 		ID:        "task-1",
 		QueueName: "q1",
@@ -80,7 +80,7 @@ func TestHeartBeatExec_ExtendsLease_WhenCloseToExpiry(t *testing.T) {
 	expiredCh := make(chan *taskInfoHeartBeat, 1)
 	hb := newTestHeartBeat(t, fakeDB, time.Second, expiredCh)
 
-	now := time.Now()
+	now := time.Now().UTC()
 	info := &taskInfoHeartBeat{
 		ID:        "task-2",
 		QueueName: "q2",
@@ -111,7 +111,7 @@ func TestHeartBeatExec_EmitsExpiredEvent_WhenLeaseExpired(t *testing.T) {
 	expiredCh := make(chan *taskInfoHeartBeat, 1)
 	hb := newTestHeartBeat(t, fakeDB, time.Second, expiredCh)
 
-	now := time.Now()
+	now := time.Now().UTC()
 	info := &taskInfoHeartBeat{
 		ID:        "task-3",
 		QueueName: "q3",
@@ -144,8 +144,9 @@ func TestHeartBeatExec_PropagatesFirstExtendLeaseError(t *testing.T) {
 	expiredCh := make(chan *taskInfoHeartBeat, 1)
 	hb := newTestHeartBeat(t, fakeDB, time.Second, expiredCh)
 
-	now := time.Now()
+	now := time.Now().UTC()
 	info := &taskInfoHeartBeat{
+		StartTime: now.Add(-1 * time.Second),
 		ID:        "task-4",
 		QueueName: "q4",
 		LeaseTill: now.Add(100 * time.Millisecond), // will cause ExtendLease
