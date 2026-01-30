@@ -39,7 +39,6 @@ import (
 
 const (
 	defaultLeaseDuration = 30 * time.Second
-	defaultTimeToExec    = 60 * 30 // 30 minutes
 )
 
 // ExtendLease extends the lease for an active task by pushing a new lease key
@@ -130,20 +129,16 @@ func isValidQueue(queue []byte) bool {
 		strings.Contains(q, "completed")
 }
 
-func (db *DB) Enqueue(queue, payload, headers []byte, maxRetry uint32, timeToExecuteInSec uint64) ([]byte, error) {
+func (db *DB) Enqueue(queue, payload, headers []byte, maxRetry uint32) ([]byte, error) {
 	taskID := uuid.New().String()
-	if timeToExecuteInSec == 0 {
-		timeToExecuteInSec = defaultTimeToExec
-	}
 	err := db.db.Update(func(txn *badger.Txn) error {
 		taskBytes, err := db.marshalTask(&generated.Task{
-			Id:            taskID,
-			Payload:       payload,
-			State:         generated.State_PENDING,
-			Headers:       headers,
-			RetryCount:    0,
-			MaxRetries:    maxRetry,
-			TimeToExecute: timeToExecuteInSec,
+			Id:         taskID,
+			Payload:    payload,
+			State:      generated.State_PENDING,
+			Headers:    headers,
+			RetryCount: 0,
+			MaxRetries: maxRetry,
 		})
 		if err != nil {
 			return err

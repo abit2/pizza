@@ -62,8 +62,7 @@ func TestServer(t *testing.T) {
 		marshaledHeader, err := json.Marshal(headers)
 		require.NoError(t, err)
 		maxRetry := 3
-		defaultTimeToExec := 3
-		_, err = dbWrap.Enqueue([]byte("q"), payload, marshaledHeader, uint32(maxRetry), uint64(defaultTimeToExec))
+		_, err = dbWrap.Enqueue([]byte("q"), payload, marshaledHeader, uint32(maxRetry))
 		require.NoError(t, err)
 	})
 

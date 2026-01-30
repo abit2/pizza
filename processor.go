@@ -86,11 +86,10 @@ func (p *Processor) start(ctx context.Context) {
 						// Emit claimed task event
 						now := time.Now()
 						p.claimedTasks <- &taskInfoHeartBeat{
-							ID:          task.GetId(),
-							QueueName:   queue,
-							LeaseTill:   now.Add(defaultLeaseDuration).UTC(),
-							StartTime:   now.UTC(),
-							ExecTimeout: now.Add(time.Duration(task.GetTimeToExecute()) * time.Second).UTC(),
+							ID:        task.GetId(),
+							QueueName: queue,
+							LeaseTill: now.Add(defaultLeaseDuration).UTC(),
+							StartTime: now.UTC(),
 						}
 
 						err := p.handleExecResult(ctx, p.exec(ctx, task), task, queue)

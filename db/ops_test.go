@@ -63,7 +63,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 	maxRetryCount := uint32(2)
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 	}
@@ -196,7 +196,7 @@ func (suite *OpstTestSuite) TestExtendLease() {
 	headers := []byte("headers")
 	maxRetryCount := uint32(1)
 
-	taskIDBytes, err := dbWrap.Enqueue(queue, []byte("payload"), headers, maxRetryCount, defaultTimeToExec)
+	taskIDBytes, err := dbWrap.Enqueue(queue, []byte("payload"), headers, maxRetryCount)
 	require.NoError(t, err)
 	taskID := string(taskIDBytes)
 
@@ -268,7 +268,7 @@ func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	var taskIDs []string
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 		taskIDs = append(taskIDs, string(taskID))
@@ -383,7 +383,7 @@ func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 
 	var taskIDs []string
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 		taskIDs = append(taskIDs, string(taskID))
@@ -448,7 +448,7 @@ func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 
 	var taskIDs []string
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 
@@ -523,7 +523,7 @@ func (suite *OpstTestSuite) TestForward() {
 	var taskIDs []string
 
 	for _, p := range payload {
-		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount, defaultTimeToExec)
+		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
 		taskIDs = append(taskIDs, string(taskID))

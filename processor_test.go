@@ -35,7 +35,7 @@ func insertSomeData(t *testing.T, db *db.DB, queues []string, taskTypeMapping ma
 		headers := map[string]string{TaskType: taskTypeMapping[queue]}
 		hbyte, err := json.Marshal(headers)
 		require.NoError(t, err)
-		taskId, err := db.Enqueue([]byte(queue), []byte("hello world"), hbyte, 3, 0)
+		taskId, err := db.Enqueue([]byte(queue), []byte("hello world"), hbyte, 3)
 		require.NoError(t, err)
 		require.NotNil(t, taskId)
 	}

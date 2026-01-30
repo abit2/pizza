@@ -13,7 +13,6 @@ message Task {
   bytes headers = 4;
   uint32 retryCount = 5;
   uint32 maxRetries = 6;
-  uint64 timeToExecute = 7;
 }
 
 enum state {

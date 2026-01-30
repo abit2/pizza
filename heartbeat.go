@@ -29,12 +29,11 @@ type HeartBeat struct {
 }
 
 type taskInfoHeartBeat struct {
-	ID          string
-	QueueName   string
-	LeaseTill   time.Time
-	StartTime   time.Time
-	FinishTime  time.Time
-	ExecTimeout time.Time
+	ID         string
+	QueueName  string
+	LeaseTill  time.Time
+	StartTime  time.Time
+	FinishTime time.Time
 }
 
 func NewHearBeater(l *log.Logger, interval time.Duration, claimed, finished <-chan *taskInfoHeartBeat, expiredTasks chan<- *taskInfoHeartBeat, db heartBeatDB, durationBeforeLeaseExpiry time.Duration) *HeartBeat {
