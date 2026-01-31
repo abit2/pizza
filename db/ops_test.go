@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
@@ -57,7 +58,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_dequeue")
 	headers := []byte("headers")
 	maxRetryCount := uint32(2)
 
@@ -133,7 +134,7 @@ func (suite *OpstTestSuite) TestDequeue() {
 			require.NoError(t, err)
 			require.NotNil(t, leaseBytes)
 			leaseTs := getTsFromKey(t, taskRefItem.LeaseKey)
-			fmt.Println("lease ts ", leaseTs, " time now ", time.Now())
+			fmt.Println("lease ts ", leaseTs, " time now ", time.Now().UTC())
 			require.True(t, time.Until(leaseTs) <= defaultLeaseDuration && time.Until(leaseTs) > 0)
 			// require.Equal(t, defaultLeaseDuration, time.Until(leaseTs))
 
@@ -163,8 +164,8 @@ func (suite *OpstTestSuite) TestDequeue() {
 			taskRefItem := getRefItem(t, txn, queue, tID)
 			require.Empty(t, taskRefItem.LeaseKey)
 			retryTs := getTsFromKey(t, taskRefItem.Key)
-			fmt.Println("retry ts ", retryTs, " time now ", time.Now())
-			require.True(t, time.Until(defaultRetryFn(time.Now())) >= time.Until(retryTs) && time.Until(retryTs) > 0)
+			fmt.Println("retry ts ", retryTs, " time now ", time.Now().UTC())
+			require.True(t, time.Until(defaultRetryFn(time.Now().UTC())) >= time.Until(retryTs) && time.Until(retryTs) > 0)
 
 			retryQBytes, err := txn.Get([]byte(taskRefItem.Key))
 			require.NoError(t, err)
@@ -177,6 +178,80 @@ func (suite *OpstTestSuite) TestDequeue() {
 	require.Equal(t, len(taskKeys), activeSeqCount)
 }
 
+func (suite *OpstTestSuite) TestExtendLease() {
+	t := suite.T()
+	bdb := suite.bdb
+	l := log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
+	// use fake clock so lease extension moves time forward deterministically
+	start := time.Now().UTC()
+	fakeClock := utils.NewFakeClock(start, l, time.Second)
+	dbWrap, err := New(bdb, l, &Config{
+		LeaseDuration: defaultLeaseDuration,
+		RetryFn:       defaultRetryFn,
+	}, fakeClock)
+	require.NoError(t, err)
+
+	queue := []byte("hello_extend_lease")
+	headers := []byte("headers")
+	maxRetryCount := uint32(1)
+
+	taskIDBytes, err := dbWrap.Enqueue(queue, []byte("payload"), headers, maxRetryCount)
+	require.NoError(t, err)
+	taskID := string(taskIDBytes)
+
+	// move task to active which creates initial lease
+	_, err = dbWrap.Dequeue(queue)
+	require.NoError(t, err)
+
+	var oldLeaseKey string
+	var oldLeaseTs time.Time
+
+	// capture original lease key and timestamp
+	err = bdb.View(func(txn *badger.Txn) error {
+		taskRefItem := getRefItem(t, txn, queue, taskID)
+		require.NotEmpty(t, taskRefItem.LeaseKey)
+
+		oldLeaseKey = taskRefItem.LeaseKey
+		oldLeaseTs = getTsFromKey(t, taskRefItem.LeaseKey)
+
+		// original lease key must exist
+		leaseItem, err := txn.Get([]byte(taskRefItem.LeaseKey))
+		require.NoError(t, err)
+		require.NotNil(t, leaseItem)
+		return nil
+	})
+	require.NoError(t, err)
+
+	// extend lease
+	_, err = dbWrap.ExtendLease(context.Background(), string(queue), taskID)
+	require.NoError(t, err)
+
+	// verify that:
+	// - lease key changed
+	// - old lease key was deleted
+	// - new lease key exists with later timestamp
+	err = bdb.View(func(txn *badger.Txn) error {
+		taskRefItem := getRefItem(t, txn, queue, taskID)
+		require.NotEmpty(t, taskRefItem.LeaseKey)
+		require.NotEqual(t, oldLeaseKey, taskRefItem.LeaseKey)
+
+		// old lease key should be gone
+		_, err := txn.Get([]byte(oldLeaseKey))
+		require.Error(t, err)
+
+		newLeaseTs := getTsFromKey(t, taskRefItem.LeaseKey)
+		require.True(t, newLeaseTs.After(oldLeaseTs), "expected extended lease ts to be after original")
+
+		// new lease key must exist
+		leaseItem, err := txn.Get([]byte(taskRefItem.LeaseKey))
+		require.NoError(t, err)
+		require.NotNil(t, leaseItem)
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	t := suite.T()
 	bdb := suite.bdb
@@ -187,17 +262,20 @@ func (suite *OpstTestSuite) TestMoveToPendingFromRetry() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_move_to_pending_from_retry")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
+	var taskIDs []string
 
 	for _, p := range payload {
 		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
-	for taskID, payload := range taskKeys {
+	for _, taskID := range taskIDs {
+		payload := taskKeys[taskID]
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
@@ -299,17 +377,20 @@ func (suite *OpstTestSuite) TestMoveToArchivedFromActive() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_archived_from_active")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
+	var taskIDs []string
 	for _, p := range payload {
 		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
-	for taskID, payload := range taskKeys {
+	for _, taskID := range taskIDs {
+		payload := taskKeys[taskID]
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
@@ -361,17 +442,21 @@ func (suite *OpstTestSuite) TestMoveToCompletedFromActive() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_completed_from_active")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
 
+	var taskIDs []string
 	for _, p := range payload {
 		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
-	for taskID, payload := range taskKeys {
+	for _, taskID := range taskIDs {
+		payload := taskKeys[taskID]
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)
 
@@ -419,7 +504,7 @@ func (suite *OpstTestSuite) TestForward() {
 		Level: slog.LevelDebug,
 	})))
 
-	now := time.Now()
+	now := time.Now().UTC()
 	l.Info("time", "now", now.UTC(), "unix", now.Unix())
 	dbWrap, err := New(bdb, l, &Config{
 		LeaseDuration: defaultLeaseDuration,
@@ -432,20 +517,22 @@ func (suite *OpstTestSuite) TestForward() {
 	taskKeys := make(map[string]string)
 
 	payload := []string{"world - 0", "world - 1"}
-	queue := []byte("hello")
+	queue := []byte("hello_forward")
 	headers := []byte("headers")
 	maxRetryCount := uint32(3)
+	var taskIDs []string
 
 	for _, p := range payload {
 		taskID, err := dbWrap.Enqueue(queue, []byte(p), headers, maxRetryCount)
 		require.NoError(t, err)
 		taskKeys[string(taskID)] = p
+		taskIDs = append(taskIDs, string(taskID))
 	}
 
 	var taskIDMovedWithForwarder []string
 	var taskIDNotMovedWithForwarder []string
 	idx := 0
-	for taskID, _ := range taskKeys {
+	for _, taskID := range taskIDs {
 		// 1 minutes
 		_, err := dbWrap.Dequeue(queue)
 		require.NoError(t, err)

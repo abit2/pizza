@@ -15,7 +15,7 @@ func NewRealClock() *RealClock {
 }
 
 func (_ *RealClock) Now() time.Time {
-	return time.Now()
+	return time.Now().UTC()
 }
 
 type FakeClock struct {

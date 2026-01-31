@@ -3,6 +3,7 @@ package pizza
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/abit2/pizza/log"
 	"github.com/abit2/pizza/task/task/generated"
@@ -28,11 +29,16 @@ type DB interface {
 type Processor struct {
 	logger *log.Logger
 	db     DB
+	clock  Clock
 
 	sema chan struct{}
 	cfg  *ProcessorConfig
 
-	handler map[string]Handler
+	handler       map[string]Handler
+	claimedTasks  chan *taskInfoHeartBeat
+	finishedTasks chan *taskInfoHeartBeat
+
+	done chan struct{}
 }
 
 type ProcessorConfig struct {
@@ -40,27 +46,40 @@ type ProcessorConfig struct {
 	Queues         []string
 }
 
-func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig) *Processor {
+func NewProcessor(l *log.Logger, db DB, cfg *ProcessorConfig, claimedTasks chan *taskInfoHeartBeat, finishedTasks chan *taskInfoHeartBeat, cl Clock) *Processor {
 	return &Processor{
-		logger: l,
-		db:     db,
-		sema:   make(chan struct{}, cfg.MaxConcurrency),
-		cfg:    cfg,
+		logger:        l,
+		db:            db,
+		sema:          make(chan struct{}, cfg.MaxConcurrency),
+		cfg:           cfg,
+		claimedTasks:  claimedTasks,
+		finishedTasks: finishedTasks,
+		done:          make(chan struct{}),
+		clock:         cl,
 	}
+}
+
+func (p *Processor) stop() {
+	close(p.done)
+
+	time.Sleep(100 * time.Millisecond)
+
+	close(p.claimedTasks)
+	close(p.finishedTasks)
 }
 
 func (p *Processor) start(ctx context.Context) {
 	for {
 		select {
-		case <-ctx.Done():
-			p.logger.Info("processor: ctx done")
+		case <-p.done:
+			p.logger.Info("processor: done")
 			return
 
 		default:
 			for _, queue := range p.cfg.Queues {
 				select {
-				case <-ctx.Done():
-					p.logger.Info("processor: ctx done")
+				case <-p.done:
+					p.logger.Info("processor: done")
 					return
 				case p.sema <- struct{}{}:
 					task, dequeueErr := p.db.Dequeue([]byte(queue))
@@ -69,9 +88,25 @@ func (p *Processor) start(ctx context.Context) {
 					}
 
 					if dequeueErr == nil {
+						// Emit claimed task event
+						now := p.clock.Now().UTC()
+						p.claimedTasks <- &taskInfoHeartBeat{
+							ID:        task.GetId(),
+							QueueName: queue,
+							LeaseTill: now.Add(defaultLeaseDuration).UTC(),
+							StartTime: now.UTC(),
+						}
+
 						err := p.handleExecResult(ctx, p.exec(ctx, task), task, queue)
 						if err != nil {
 							p.logger.Error("exec err", "err", err)
+						} else {
+							// Emit finished task event
+							p.finishedTasks <- &taskInfoHeartBeat{
+								ID:         task.GetId(),
+								QueueName:  queue,
+								FinishTime: p.clock.Now().UTC(),
+							}
 						}
 					}
 

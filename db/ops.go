@@ -2,7 +2,9 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -40,6 +42,43 @@ const (
 	defaultLeaseDuration = 30 * time.Second
 )
 
+// ExtendLease extends the lease for an active task by pushing a new lease key
+// with the configured lease duration and deleting the previous lease key.
+func (db *DB) ExtendLease(_ context.Context, qname, id string) (int64, error) {
+	queue := []byte(qname)
+	taskID := id
+	var leaseTill int64
+
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
+			return errors.Wrap(pausedErr, "failed to check paused queue")
+		}
+
+		taskRef, err := db.getReference(txn, queue, taskID)
+		if err != nil {
+			return errors.Wrap(err, "failed to get reference")
+		}
+
+		// delete the previous lease key (if any)
+		if taskRef.LeaseKey != "" {
+			if err := txn.Delete([]byte(taskRef.LeaseKey)); err != nil {
+				return errors.Wrap(err, "failed to delete previous lease")
+			}
+		}
+
+		// lease task
+		leaseTill, err = db.leaseTask(txn, queue, taskID)
+		if err != nil {
+			return errors.Wrap(err, "failed to lease task")
+		}
+
+		return nil
+	}); err != nil {
+		return 0, errors.Wrap(err, "ExtendLease")
+	}
+	return leaseTill, nil
+}
+
 var (
 	ErrQueuePaused = errors.New("queue is paused")
 	ErrNotFound    = errors.New("not found")
@@ -73,6 +112,9 @@ func New(db *badger.DB, logger *log.Logger, config *Config, cl Clock) (*DB, erro
 			RetryFn:       defaultRetryFn,
 		}
 	}
+	if config.LeaseDuration < defaultLeaseDuration {
+		config.LeaseDuration = defaultLeaseDuration
+	}
 	return &DB{db: db, logger: logger, config: config, clock: cl}, nil
 }
 
@@ -103,6 +145,10 @@ func (db *DB) Enqueue(queue, payload, headers []byte, maxRetry uint32) ([]byte, 
 			return err
 		}
 
+		if err := db.saveQueueIndex(txn, string(queue)); err != nil {
+			return errors.Wrap(err, "failed to save queue index")
+		}
+
 		err = txn.Set(keyTask(taskID), taskBytes)
 		if err != nil {
 			return err
@@ -119,6 +165,57 @@ func (db *DB) Enqueue(queue, payload, headers []byte, maxRetry uint32) ([]byte, 
 		return nil, err
 	}
 	return []byte(taskID), nil
+}
+
+type QueueIndex struct {
+	Names []string `json:"names"`
+}
+
+func (db *DB) GetAllQueues() ([]string, error) {
+	var queueIndex *QueueIndex
+	var err error
+	db.db.View(func(txn *badger.Txn) error {
+		queueIndex, err = db.loadQueueIndex(txn)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
+	return queueIndex.Names, nil
+}
+
+func (db *DB) loadQueueIndex(txn *badger.Txn) (*QueueIndex, error) {
+	item, err := txn.Get(keyQueues())
+	if err == badger.ErrKeyNotFound {
+		return &QueueIndex{Names: []string{}}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var qi QueueIndex
+	err = item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &qi)
+	})
+	return &qi, err
+}
+
+func (db *DB) saveQueueIndex(txn *badger.Txn, queue string) error {
+	queueIndex, err := db.loadQueueIndex(txn)
+	if err != nil {
+		return err
+	}
+
+	queueIndex.Names = append(queueIndex.Names, queue)
+
+	data, err := json.Marshal(queueIndex)
+	if err != nil {
+		return err
+	}
+
+	queueKey := keyQueues()
+	return txn.Set([]byte(queueKey), data)
 }
 
 func (db *DB) marshalTask(task *generated.Task) ([]byte, error) {
@@ -190,15 +287,14 @@ func (db *DB) Dequeue(queue []byte) (*generated.Task, error) {
 			return ErrQueueEmpty
 		}
 
-		db.logger.Info("Dequeued task", "taskID", taskID)
-
 		// push to active queue
 		if err := db.pushToList(txn, queue, []byte(generated.State_ACTIVE.String()), taskID); err != nil {
 			return err
 		}
 
 		// lease task
-		if err := db.leaseTask(txn, queue, taskID); err != nil {
+		_, err := db.leaseTask(txn, queue, taskID)
+		if err != nil {
 			return err
 		}
 
@@ -271,6 +367,8 @@ func (db *DB) pushToList(txn *badger.Txn, queue, state []byte, taskID string) er
 	if err != nil && !(errors.Is(err, badger.ErrKeyNotFound) && string(state) == generated.State_PENDING.String()) {
 		return err
 	}
+	// taskRef is not nil
+	//
 	if taskRef != nil {
 		taskRef.Key = keyForQueue
 		taskRef.LeaseKey = ""
@@ -355,18 +453,18 @@ func (db *DB) pushToZSetQueue(txn *badger.Txn, timeTill int64, queue []byte, tas
 	return nil
 }
 
-func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) error {
-	timeTillLease := db.clock.Now().Add(db.config.LeaseDuration).Unix()
+func (db *DB) leaseTask(txn *badger.Txn, queue []byte, taskID string) (int64, error) {
+	timeTillLease := db.clock.Now().UTC().Add(db.config.LeaseDuration).Unix()
 	err := db.pushToZSetQueue(txn, timeTillLease, queue, taskID, []byte(leaseState), true)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return nil
+	return timeTillLease, nil
 }
 
 func (db *DB) MoveToArchivedFromActive(queue []byte, taskID string) error {
-	return db.db.Update(func(txn *badger.Txn) error {
+	if err := db.db.Update(func(txn *badger.Txn) error {
 		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
 			return pausedErr
 		}
@@ -376,24 +474,24 @@ func (db *DB) MoveToArchivedFromActive(queue []byte, taskID string) error {
 		// delete from the active queue
 		taskRef, err := db.getReference(txn, queue, taskID)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to get task reference")
 		}
 
 		// delete from the existing queue - active
 		err = txn.Delete([]byte(taskRef.Key))
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete task from active queue")
 		}
 
 		// delete the lease
 		err = txn.Delete([]byte(taskRef.LeaseKey))
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to delete lease")
 		}
 
 		task, err := db.getTask(txn, taskID)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to get the task")
 		}
 		if task == nil {
 			return ErrNotFound
@@ -404,18 +502,21 @@ func (db *DB) MoveToArchivedFromActive(queue []byte, taskID string) error {
 		task.State = stateToMove
 		taskBytes, err := db.marshalTask(task)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "failed to marshal task")
 		}
 
 		if setErr := txn.Set(keyTask(taskID), taskBytes); setErr != nil {
-			return setErr
+			return errors.Wrap(err, "failed to set the task")
 		}
 
 		if pushErr := db.pushToList(txn, queue, []byte(stateToMove.String()), taskID); pushErr != nil {
-			return pushErr
+			return errors.Wrap(pushErr, "failed to push task to archived queue")
 		}
 		return nil
-	})
+	}); err != nil {
+		return errors.Wrap(err, "failed to move task to archived")
+	}
+	return nil
 }
 
 func (db *DB) MoveToCompletedFromActive(queue []byte, taskID string) error {
@@ -471,7 +572,7 @@ func (db *DB) MoveToCompletedFromActive(queue []byte, taskID string) error {
 }
 
 func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
-	err := db.db.Update(func(txn *badger.Txn) error {
+	if err := db.db.Update(func(txn *badger.Txn) error {
 		if pausedErr := db.checkPausedQueue(txn, queue); pausedErr != nil {
 			return errors.Wrap(pausedErr, "failed to check paused queue")
 		}
@@ -516,15 +617,14 @@ func (db *DB) MoveToRetryFromActive(queue []byte, taskID string) error {
 			return errors.Wrap(err, "failed to set task")
 		}
 
-		retryTime := db.config.RetryFn(db.clock.Now())
+		retryTime := db.config.RetryFn(db.clock.Now().UTC())
 		err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskID, []byte(generated.State_RETRY.String()), false)
 		if err != nil {
 			return errors.Wrap(err, "failed to push to zset")
 		}
 
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return errors.Wrap(err, "MoveToRetryFromActive")
 	}
 	return nil
@@ -679,4 +779,78 @@ func (db *DB) taskIDFromKeyOfZset(key []byte) []byte {
 		return nil
 	}
 	return key[idx+1:]
+}
+
+func (db *DB) RecoverExpiredTasks(queue []byte, timeStamp int64) error {
+	if err := db.db.Update(func(txn *badger.Txn) error {
+		// iterate and recover all which are behind the timestamp in zset
+		// iterate the lease zset
+		// get the task id from item
+		prefix := keyLeaseQueuePrefix(timeStamp, queue)
+
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(prefix)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+			if bytes.Compare(key, []byte(prefix)) > 0 {
+				break
+			}
+			// always delete before overwriting the reference
+			// change the state of the task to retry state
+			// delete from the active queue
+			taskID := db.taskIDFromKeyOfZset(key)
+			taskIDStr := string(taskID)
+
+			taskRef, err := db.getReference(txn, queue, taskIDStr)
+			if err != nil {
+				return errors.Wrap(err, "failed to get reference")
+			}
+
+			db.logger.Debug("task ref", "reference", taskRef)
+			// delete from the existing queue - active
+			err = txn.Delete([]byte(taskRef.Key))
+			if err != nil {
+				return errors.Wrap(err, "failed to delete from active queue")
+			}
+
+			// delete the lease
+			err = txn.Delete([]byte(taskRef.LeaseKey))
+			if err != nil {
+				return errors.Wrap(err, "failed to delete lease")
+			}
+
+			task, err := db.getTask(txn, taskIDStr)
+			if err != nil {
+				return errors.Wrap(err, "failed to get task")
+			}
+			if task == nil {
+				return errors.Wrap(ErrNotFound, "task not found")
+			}
+
+			task.State = generated.State_RETRY
+			taskBytes, err := db.marshalTask(task)
+			if err != nil {
+				return errors.Wrap(err, "failed to marshal task")
+			}
+
+			err = txn.Set(keyTask(taskIDStr), taskBytes)
+			if err != nil {
+				return errors.Wrap(err, "failed to set task")
+			}
+
+			retryTime := db.config.RetryFn(db.clock.Now().UTC())
+			err = db.pushToZSetQueue(txn, retryTime.Unix(), queue, taskIDStr, []byte(generated.State_RETRY.String()), false)
+			if err != nil {
+				return errors.Wrap(err, "failed to push to zset")
+			}
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "RecoverExpiredTasks")
+	}
+	return nil
 }

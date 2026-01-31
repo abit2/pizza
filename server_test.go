@@ -21,7 +21,7 @@ import (
 )
 
 func TestServer(t *testing.T) {
-	l := slogLogger()
+	l := testSlogLogger()
 	path := "./server"
 	defer func() {
 		l.Info("removing os.RemoveAll")
@@ -35,7 +35,7 @@ func TestServer(t *testing.T) {
 		require.NoError(t, bdb.Close())
 	}()
 
-	staticTime := time.Now()
+	staticTime := time.Now().UTC()
 	fakeClock := utils.NewFakeClock(staticTime, l, 15*time.Second)
 	dbWrap, err := db.New(bdb, l, &db.Config{
 		LeaseDuration: 20 * time.Second,
@@ -50,7 +50,7 @@ func TestServer(t *testing.T) {
 		PromiseInterval: 1 * time.Second,
 	}, fakeClock)
 
-	ctx, cancel := context.WithCancel(context.TODO())
+	ctx := context.TODO()
 	var wg sync.WaitGroup
 
 	wg.Go(func() {
@@ -79,7 +79,7 @@ func TestServer(t *testing.T) {
 
 	l.Debug("starting to sleep")
 	time.Sleep(2 * time.Second)
-	cancel()
+	taskServer.Stop()
 
 	wg.Wait()
 
@@ -101,7 +101,7 @@ func (dh *DummyHandler) Process(ctx context.Context, task *generated.Task) error
 	return errors.New("try again")
 }
 
-func slogLogger() *log.Logger {
+func testSlogLogger() *log.Logger {
 	lvl := new(slog.LevelVar)
 	lvl.Set(slog.LevelDebug)
 	return log.NewLogger(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{

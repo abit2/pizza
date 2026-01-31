@@ -5,24 +5,26 @@ package task;
 option go_package = "task/generated;generated";
 
 message Task {
-    string id = 1;
-    bytes payload = 2;
-    state state = 3;
-    bytes headers = 4;
-    uint32 retryCount = 5;
-    uint32 maxRetries = 6;
+  string id = 1;
+  bytes payload = 2;
+  state state = 3;
+  // headers are supposed to be used to send info to the deeper layers
+  // nothing will be changes/updated/manipulated on the pizza system itself
+  bytes headers = 4;
+  uint32 retryCount = 5;
+  uint32 maxRetries = 6;
 }
 
 enum state {
-    PENDING = 0;
-    ACTIVE = 1;
-    COMPLETED = 2;
-    RETRY = 3;
-    ARCHIVED = 4;
+  PENDING = 0;
+  ACTIVE = 1;
+  COMPLETED = 2;
+  RETRY = 3;
+  ARCHIVED = 4;
 }
 
 message TaskReference {
-    string id = 1;
-    string key = 2;
-    string leaseKey = 3;
+  string id = 1;
+  string key = 2;
+  string leaseKey = 3;
 }

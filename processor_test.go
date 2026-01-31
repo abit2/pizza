@@ -81,7 +81,7 @@ func (suite *ProcessorTestSuite) Test_Start() {
 	p := NewProcessor(l, db, &ProcessorConfig{
 		MaxConcurrency: 5,
 		Queues:         queues,
-	})
+	}, make(chan *taskInfoHeartBeat, 100), make(chan *taskInfoHeartBeat, 100), utils.NewRealClock())
 
 	insertSomeData(t, db, queues, taskTypeMapping)
 
@@ -95,14 +95,13 @@ func (suite *ProcessorTestSuite) Test_Start() {
 	})
 
 	ctx := context.Background()
-	ctxWithCancel, cancel := context.WithCancel(ctx)
 	go func() {
-		p.start(ctxWithCancel)
+		p.start(ctx)
 	}()
 
 	time.Sleep(300 * time.Millisecond)
 	l.Info("cancelling")
-	cancel()
+	p.stop()
 	require.Equal(t, len(queues), int(d.count.Load()))
 }
 

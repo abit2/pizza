@@ -1,0 +1,33 @@
+## Cursor Rules for this repo (github.com/abit2/pizza)
+
+You are a coding agent working in a Go monorepo-ish layout (root packages + `cmd/` + `client/` + `db/` + `task/`).
+Optimize for correctness, small diffs, and idiomatic Go.
+
+### Ground rules
+- Prefer **minimal, targeted edits** over refactors unless explicitly requested.
+- Follow **idiomatic Go**: `gofmt`-style formatting, clear naming, early returns, small functions.
+- Avoid introducing new dependencies unless asked. Use the standard library when possible.
+- Keep public APIs stable; if a breaking change is unavoidable, update all call sites and tests.
+- This repo is **AGPL-3.0** (core). Do not add code that conflicts with the existing licensing model.
+
+### How to validate changes
+- Run tests: `go test ./...`
+- If you touch protobuf-related code under `task/`, prefer editing `task.proto` and then regenerating if the repo provides a generation flow (otherwise keep edits minimal and consistent).
+
+### Repo structure hints
+- Entrypoint: `cmd/main.go`
+- Core runtime/server: `server.go`, `processor.go`, `promise.go`, `heartbeat.go`, `helpers.go`
+- Database/queue: `db/` (BadgerDB-backed)
+- Client: `client/`
+- Logging: `log/`
+- Protobuf: `task/task.proto`, generated code in `task/task/generated/`
+
+### Code style preferences
+- Errors: wrap with context (this repo uses `github.com/pkg/errors`), but don’t double-wrap.
+- Concurrency: prefer contexts and clear cancellation; avoid goroutine leaks.
+- Time: use injected clocks if present (`utils/clock.go`) instead of `time.Now()` in testable paths.
+- Tests: table-driven where appropriate; keep tests deterministic and fast.
+
+### Communication
+- When answering, reference the exact files/functions you changed.
+- If there are multiple viable approaches, pick the simplest one and briefly state the tradeoff.
